@@ -1,0 +1,45 @@
+{
+  "name": "agentic-learning-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentic learning & career copilot — a LangGraph.js supervisor + vertical RAG agents with per-tenant isolation, structured output, and offline eval.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "demo": "tsx src/cli.ts",
+    "eval": "tsx src/eval/cli.ts",
+    "cost": "tsx src/cost/cli.ts"
+  },
+  "keywords": [
+    "agents",
+    "langgraph",
+    "rag",
+    "typescript",
+    "eval"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.9.0",
+    "globals": "^17.7.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.0.1",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.3",
+    "@langchain/langgraph": "^1.4.8",
+    "zod": "^3.23.8"
+  }
+}
