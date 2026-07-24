@@ -90,7 +90,7 @@ models emit.
   recall@k < 0.90, groundedness < 0.90, or **any** cross-tenant leak; thresholds live in one
   place (`EVAL_THRESHOLDS`). Current offline run: routing **95.8%**, recall@4 **100%**,
   groundedness **100%**, MRR **1.00**, tenant isolation **100%** (0 leaks / 4 probes).
-- **Failure-mode catalog** — [`docs/failure-modes.md`](docs/failure-modes.md) documents 7
+- **Failure-mode catalog** — [`docs/failure-modes.md`](docs/failure-modes.md) documents 10
   failure modes and the guard + test for each.
 
 **Cost discipline (Phase 3).** Every model call runs through a `ModelGateway` (`src/llm/`,
@@ -120,7 +120,7 @@ models emit.
 - **Tracing** (`src/observability/tracer.ts`) — turn-lifecycle events
   (`turn.start`/`route`/`score`/`end`) for a LangSmith/PostHog-style sink.
 
-**Quality.** 107 tests (≥85% coverage gate) covering the Phase 1–4 DoD: 100% valid routing,
+**Quality.** 108 tests (≥85% coverage gate) covering the Phase 1–4 DoD: 100% valid routing,
 zero cross-tenant leakage (unit probes + gated eval metric), zod rejection of off-schema
 output, a green end-to-end graph, the eval gate, the cost controls (budget pre-flight,
 tier-by-cohort, warm-cache-free, per-user cap, metrics), profile-tuned routing across turns,
