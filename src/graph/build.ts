@@ -3,6 +3,7 @@ import { CopilotState } from "./state";
 import type { Supervisor } from "../agents/router";
 import type { VerticalAgent, AgentResult } from "../agents/verticalAgent";
 import { Scorer } from "../agents/scorer";
+import { sinkOf, type TurnStreamSink } from "../streaming/payloads";
 
 export interface GraphDeps {
   supervisor: Supervisor;
@@ -12,13 +13,20 @@ export interface GraphDeps {
   scorer?: Scorer;
 }
 
-function agentUpdate(result: AgentResult) {
+/** Notes are emitted live AND accumulated into state from the same array, so
+ *  the streamed note events and `CopilotAnswer.notes` can never disagree. */
+function noted(notes: string[], sink: TurnStreamSink | undefined): string[] {
+  if (sink) for (const note of notes) sink({ kind: "note", note });
+  return notes;
+}
+
+function agentUpdate(result: AgentResult, sink: TurnStreamSink | undefined) {
   return {
     answer: result.answer,
     citations: result.citations,
     grounded: result.grounded,
     usage: result.usage ? [result.usage] : [],
-    notes: result.grounded ? [] : [`agent:empty-retrieval`],
+    notes: noted(result.grounded ? [] : [`agent:empty-retrieval`], sink),
   };
 }
 
@@ -37,17 +45,35 @@ export function buildGraph(deps: GraphDeps) {
   const scorer = deps.scorer ?? new Scorer();
 
   return new StateGraph(CopilotState)
-    .addNode("supervisor", async (s) => {
+    .addNode("supervisor", async (s, config) => {
+      const sink = sinkOf(config);
       const route = await deps.supervisor.route(s.query, s.scope, s.cohort, s.routingPrior ?? undefined);
+      if (sink) {
+        sink({
+          kind: "route",
+          vertical: route.vertical,
+          confidence: route.confidence,
+          viaFallback: route.viaFallback,
+          prior: s.routingPrior ?? null,
+        });
+      }
       return {
         route,
         usage: [route.usage],
-        notes: route.viaFallback ? [`router:fallback(${route.vertical})`] : [],
+        notes: noted(route.viaFallback ? [`router:fallback(${route.vertical})`] : [], sink),
       };
     })
-    .addNode("courses", async (s) => agentUpdate(await deps.courses.run(s.query, s.scope, s.cohort)))
-    .addNode("jobs", async (s) => agentUpdate(await deps.jobs.run(s.query, s.scope, s.cohort)))
-    .addNode("synthesis", (s) => ({ notes: [`synthesis:route=${s.route.vertical}`] }))
+    .addNode("courses", async (s, config) => {
+      const sink = sinkOf(config);
+      return agentUpdate(await deps.courses.run(s.query, s.scope, s.cohort, sink), sink);
+    })
+    .addNode("jobs", async (s, config) => {
+      const sink = sinkOf(config);
+      return agentUpdate(await deps.jobs.run(s.query, s.scope, s.cohort, sink), sink);
+    })
+    .addNode("synthesis", (s, config) => ({
+      notes: noted([`synthesis:route=${s.route.vertical}`], sinkOf(config)),
+    }))
     .addNode("scoring", (s) => ({
       score: scorer.score({ grounded: s.grounded, citations: s.citations.length }),
     }))

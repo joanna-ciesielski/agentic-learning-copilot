@@ -113,8 +113,32 @@ declined by `ask()` is declined by `stream()`, with the same reason.
 - **−** Two ways to invoke the copilot means two surfaces to keep in step. The
   parity test is what makes that maintainable rather than a standing risk.
 
-## Addendum — to be recorded in Phase 2
+## Addendum (Phase 2) — event source: LangGraph custom stream mode
 
-Whether token events are sourced from LangGraph's own streaming API at v1.4.8 or
-from the existing `Tracer` seam is decided by a spike at the start of Phase 2 and
-appended here with the evidence that decided it.
+Decided by the spike the risk register called for, against the installed
+`@langchain/langgraph` v1.4.8. **Token events are sourced from LangGraph's
+`streamMode: "custom"`** — nodes write pre-envelope payloads through the
+`writer` LangGraph injects into node config, and `Copilot.stream()` consumes
+`graph.stream(input, { streamMode: ["custom", "values"] })`, taking live events
+from the custom channel and the final state from the values channel. The
+`Tracer` seam stays what it was: observability, not transport.
+
+Evidence, from a runtime probe (not type-reading alone):
+
+- `config.writer` is present in nodes under custom-mode streaming, absent under
+  `invoke()` — so the `ask()` path runs the identical compiled graph with every
+  emission guarded out. One graph, two delivery modes, no second policy path.
+- Custom-channel events preserve emission order among themselves; **cross-mode
+  ordering is not guaranteed** (the probe observed a values chunk arriving
+  before a node's late custom events). Consequence: `usage` and `done` are
+  emitted only after the graph stream fully drains, never on sighting the
+  values chunk.
+- `streamMode: "messages"` was rejected: it observes LangChain `BaseChatModel`
+  instances, and this repo's provider-agnostic `ChatModel` deliberately is not
+  one (ADR 0002). The custom channel carries this contract's own payloads
+  instead, which also keeps the event layer transport- and framework-agnostic.
+
+Envelope discipline: nodes are envelope-ignorant. `seq`/`threadId`/`ts` are
+applied in exactly one place (`Copilot.stream()`), and every outbound event is
+validated against the contract schema before it is yielded, so payload drift
+fails in CI rather than on the wire.

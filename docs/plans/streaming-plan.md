@@ -1,6 +1,6 @@
 # Build Plan — Streaming Layer for agentic-learning-copilot (Plan A, v1.0)
 
-Prepared 2026-08-12. Target repo: github.com/JoannaCiesielski/agentic-learning-copilot (verified against `main` as of 2026-08-12: no HTTP server, no streaming anywhere in `src/`; entry points are the library exports in `src/index.ts` and `src/cli.ts`; runtime deps are only `@langchain/core`, `@langchain/langgraph`, `zod`).
+Prepared 2026-08-12. Target repo: github.com/joanna-ciesielski/agentic-learning-copilot (verified against `main` as of 2026-08-12: no HTTP server, no streaming anywhere in `src/`; entry points are the library exports in `src/index.ts` and `src/cli.ts`; runtime deps are only `@langchain/core`, `@langchain/langgraph`, `zod`).
 
 ## Purpose
 
