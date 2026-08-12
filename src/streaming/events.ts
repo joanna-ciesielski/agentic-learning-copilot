@@ -84,8 +84,13 @@ const ENVELOPE_SHAPE = {
 export const EnvelopeSchema = z.object(ENVELOPE_SHAPE).strict();
 export type StreamEnvelope = z.infer<typeof EnvelopeSchema>;
 
-/** Kept in sync with `Tier` by the annotation: a divergence is a compile error. */
-export const TierSchema: z.ZodType<Tier> = z.enum(["frontier", "mid", "cheap"]);
+/** Mirrors `Tier` from src/cost/pricing.ts, checked in BOTH directions at
+ *  compile time: a literal here that is not a `Tier` fails the generic
+ *  constraint, and a `Tier` member missing here collapses the type to `never`,
+ *  failing the `satisfies`. Either drift is a red build, not a runtime surprise. */
+type ExhaustiveTiers<T extends readonly Tier[]> = [Tier] extends [T[number]] ? T : never;
+const TIER_VALUES = ["frontier", "mid", "cheap"] as const;
+export const TierSchema = z.enum(TIER_VALUES satisfies ExhaustiveTiers<typeof TIER_VALUES>);
 
 /** Mirrors `Citation` from src/retrieval/types.ts. */
 export const CitationSchema = z
