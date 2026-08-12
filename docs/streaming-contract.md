@@ -1,6 +1,6 @@
 # Streaming event contract — v1.0
 
-**Status:** draft for review · **Date:** 2026-08 · **Schemas:** `src/streaming/events.ts` · **Rationale:** [ADR 0008](adr/0008-sse-streaming.md)
+**Status:** accepted · **Date:** 2026-08 · **Schemas:** `src/streaming/events.ts` · **Rationale:** [ADR 0008](adr/0008-sse-streaming.md)
 
 This is the interface between the copilot's streaming path and everything that
 consumes it — the SSE endpoint, the demo client, and the parity tests. It is
@@ -230,25 +230,29 @@ Authentication and authorization on the endpoint; multi-node resume; persistence
 of the event log; bidirectional client→server messaging (that is the WebSocket
 swap in ADR 0008); per-event contract versioning.
 
-## 14. Open questions for review
+## 14. Decisions recorded
 
-Listed rather than silently decided; each has a recommendation.
+Five points where this contract departs from, or adds to, the literal text of the
+build plan. All five were reviewed and accepted at Phase 0 sign-off. Reopening
+any of them requires new written evidence, on the same terms as the plan's own
+Fixed Decisions.
 
-1. **Method naming.** The plan says `Copilot.run()` and `ChatModel.chat()`; the
-   repo has `Copilot.ask()` and `ChatModel.complete()`. This contract targets the
-   real names. Recommendation: `Copilot.stream()` beside `ask()`, and
-   `ChatModel.streamComplete()` beside `complete()` — symmetry with the existing
-   verb beats the plan's placeholder name.
-2. **`answerSha256` on `done`.** An addition beyond the plan. It costs one hash
-   over text already in memory and turns the parity invariant into something the
-   client can check. Recommendation: keep.
-3. **`score` on `done`.** `CopilotAnswer` carries a `TurnScore`; the plan's event
-   list has nowhere to put it. Recommendation: nest it in `done` rather than add
-   a ninth event type.
-4. **Heartbeat without `id:`.** Reconciles fixed decision 3 (every event carries
-   the envelope) with fixed decision 4 (the resume cursor must point at
-   replayable events). Recommendation: as specified in §8.
-5. **`RESUME_GAP` as a terminal `error`.** The plan says "emits `resume_gap` and
-   restarts cleanly", but the fixed event catalog has no `resume_gap` type and
-   `error` is terminal. Recommendation: terminal `error` + client-driven restart
-   (§7 R4), so `seq` never rewinds.
+1. **Method naming — accepted.** The plan says `Copilot.run()` and
+   `ChatModel.chat()`; neither exists. The repo has `Copilot.ask()` and
+   `ChatModel.complete()`. The streaming surface is therefore
+   `Copilot.stream()` beside `ask()`, and `ChatModel.streamComplete()` beside
+   `complete()` — symmetry with the existing verbs, so a reader who knows
+   `complete()` guesses `streamComplete()` correctly.
+2. **`answerSha256` on `done` — accepted.** An addition beyond the plan. One hash
+   over text already in memory, and it turns the parity invariant into something
+   the client can verify rather than trust.
+3. **`score` on `done` — accepted.** `CopilotAnswer` carries a `TurnScore` and the
+   fixed eight-event catalog has nowhere to put it. Nested in `done` rather than
+   adding a ninth event type.
+4. **Heartbeat carries `seq`, but no `id:`, and is not buffered — accepted.**
+   Reconciles fixed decision 3 (every event carries the envelope) with fixed
+   decision 4 (the resume cursor must point only at replayable events). See §8.
+5. **`RESUME_GAP` is a terminal `error` — accepted.** The plan says "emits
+   `resume_gap` and restarts cleanly", but the fixed catalog has no `resume_gap`
+   type and `error` is terminal. Resolved as a terminal `error` plus a
+   client-driven restart (§7 R4), so `seq` never rewinds within a stream.
