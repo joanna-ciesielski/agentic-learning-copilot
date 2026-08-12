@@ -2,10 +2,15 @@
 export { HashingEmbedder, type Embedder } from "./embeddings/hashingEmbedder";
 export {
   MockChatModel,
+  isStreamingChatModel,
+  streamOrFallback,
   type ChatModel,
   type ChatMessage,
   type Role,
   type Responder,
+  type TokenChunk,
+  type StreamingChatModel,
+  type MockChatModelOptions,
 } from "./llm/chatModel";
 export { parseStructured, extractJson, StructuredOutputError } from "./core/structured";
 export { type Vertical, type TenantScope, VERTICALS, isVertical } from "./core/types";
@@ -43,6 +48,26 @@ export {
   type TurnUsage,
 } from "./graph/copilot";
 
+// Streaming (contract v1.0 — docs/streaming-contract.md)
+export { chunkByGraphemes, DEFAULT_CHUNK_SIZE } from "./streaming/chunking";
+export {
+  CopilotEventSchema,
+  EnvelopeSchema,
+  ThreadIdSchema,
+  STREAMING_CONTRACT_VERSION,
+  STREAM_EVENT_TYPES,
+  STREAM_ERROR_CODES,
+  TERMINAL_EVENT_TYPES,
+  HEARTBEAT_INTERVAL_MS,
+  RING_BUFFER_EVENTS_PER_THREAD,
+  RING_BUFFER_MAX_THREADS,
+  SSE_RETRY_MS,
+  type CopilotEvent,
+  type StreamEventType,
+  type StreamErrorCode,
+  type StreamEnvelope,
+} from "./streaming/events";
+
 // Self-improvement, memory, observability (Phase 4)
 export { Scorer, type TurnScore } from "./agents/scorer";
 export { ProfileStore, type UserProfile } from "./memory/profile";
@@ -73,6 +98,8 @@ export {
   DefaultModelGateway,
   asGateway,
   isModelGateway,
+  isStreamingGateway,
+  type StreamingModelGateway,
   type ModelGateway,
   type CallContext,
   type CallUsage,
