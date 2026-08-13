@@ -46,10 +46,12 @@ export {
   type CreateCopilotOptions,
   type CopilotGuards,
   type TurnUsage,
+  type StreamOptions,
 } from "./graph/copilot";
 
 // Streaming (contract v1.0 — docs/streaming-contract.md)
-export { chunkByGraphemes, DEFAULT_CHUNK_SIZE } from "./streaming/chunking";
+export { chunkByGraphemes, indexedChunks, DEFAULT_CHUNK_SIZE } from "./streaming/chunking";
+export { sinkOf, type TurnStreamPayload, type TurnStreamSink } from "./streaming/payloads";
 export {
   CopilotEventSchema,
   EnvelopeSchema,

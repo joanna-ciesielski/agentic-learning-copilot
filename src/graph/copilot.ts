@@ -18,6 +18,15 @@ import type { Tier } from "../cost/pricing";
 import { Scorer, type TurnScore } from "../agents/scorer";
 import type { ProfileStore } from "../memory/profile";
 import { NULL_TRACER, type Tracer } from "../observability/tracer";
+import {
+  CopilotEventSchema,
+  ThreadIdSchema,
+  type CopilotEvent,
+  type StreamErrorCode,
+} from "../streaming/events";
+import type { TurnStreamPayload } from "../streaming/payloads";
+import type { CopilotStateType } from "./state";
+import { createHash, randomUUID } from "node:crypto";
 
 export interface CopilotRequest {
   query: string;
@@ -85,6 +94,21 @@ export interface CreateCopilotOptions {
   tracer?: Tracer;
 }
 
+export interface StreamOptions {
+  /** Resume key carried on every event. Validated against the contract's
+   *  pattern; generated when omitted. */
+  threadId?: string;
+  /** Injectable clock for the `ts` envelope field (deterministic tests). */
+  clock?: () => number;
+}
+
+/** The one place the decline wording lives. `ask()` returns it as the answer
+ *  and `stream()` carries it on the error event, so P2 (identical words on both
+ *  paths) is structural rather than a string kept in sync by hand. */
+function declineAnswer(reason: string): string {
+  return `Request declined — ${reason}.`;
+}
+
 const EMPTY_USAGE: TurnUsage = {
   calls: 0,
   promptTokens: 0,
@@ -128,20 +152,13 @@ export class Copilot {
   async ask(req: CopilotRequest): Promise<CopilotAnswer> {
     const cohort = req.cohort ?? "general";
     const { orgId, userId } = req.scope;
-    const { rateLimiter, relevanceGuard, budget, profileStore, tracer = NULL_TRACER } = this.guards;
+    const { profileStore, tracer = NULL_TRACER } = this.guards;
 
     tracer.emit({ type: "turn.start", data: { orgId, userId, cohort, query: req.query } });
 
     // Pre-flight gates — reject before spending a single token.
-    if (rateLimiter && !rateLimiter.tryConsume(userId)) {
-      return this.declined(req, "rate-limit: per-user request cap reached", tracer);
-    }
-    if (relevanceGuard && !relevanceGuard.isRelevant(req.query)) {
-      return this.declined(req, "off-topic: query outside supported domains", tracer);
-    }
-    if (budget && budget.remaining(orgId) <= 0) {
-      return this.declined(req, "budget: org token budget exhausted", tracer);
-    }
+    const preflight = this.preflightDecline(req);
+    if (preflight) return this.declined(req, preflight.reason, tracer);
 
     // Zone-4: read this user's routing prior from their profile.
     const routingPrior = profileStore ? profileStore.preferredVertical(req.scope) : null;
@@ -185,13 +202,164 @@ export class Copilot {
     };
   }
 
+  /**
+   * Streamed counterpart of `ask()`. Same graph, same guards, same side effects
+   * (rate-limit consumption, profile record, tracer lifecycle) — the difference
+   * is delivery: an AsyncIterable of contract events instead of one answer.
+   *
+   * Events are sourced from LangGraph's custom stream mode (nodes write
+   * pre-envelope payloads; see ADR 0008 addendum). The envelope — monotonic
+   * `seq`, `threadId`, `ts` — is applied here and nowhere else, and every
+   * outbound event is validated against the contract schema, so a payload that
+   * drifts from docs/streaming-contract.md fails loudly in CI rather than
+   * quietly on the wire.
+   *
+   * Divergence from ask(), per contract §6: ask() rethrows unexpected errors;
+   * stream() terminates with a typed UPSTREAM_ERROR event carrying no internal
+   * detail (that goes to the tracer). A stream never ends in an exception once
+   * the first event has been emitted.
+   */
+  async *stream(req: CopilotRequest, opts: StreamOptions = {}): AsyncGenerator<CopilotEvent, void> {
+    const clock = opts.clock ?? (() => Date.now());
+    const threadId = opts.threadId === undefined ? randomUUID() : ThreadIdSchema.parse(opts.threadId);
+    let seq = 0;
+    let tokenCount = 0;
+    const make = (event: Record<string, unknown>): CopilotEvent =>
+      CopilotEventSchema.parse({ seq: ++seq, threadId, ts: clock(), ...event });
+
+    const cohort = req.cohort ?? "general";
+    const { profileStore, tracer = NULL_TRACER } = this.guards;
+
+    tracer.emit({
+      type: "turn.start",
+      data: { orgId: req.scope.orgId, userId: req.scope.userId, cohort, query: req.query },
+    });
+
+    const preflight = this.preflightDecline(req);
+    if (preflight) {
+      tracer.emit({ type: "turn.declined", data: { reason: preflight.reason } });
+      tracer.emit({ type: "turn.end", data: { declined: true } });
+      yield make({
+        type: "error",
+        code: preflight.code,
+        message: declineAnswer(preflight.reason),
+        retryable: false,
+        partial: false,
+      });
+      return;
+    }
+
+    const routingPrior = profileStore ? profileStore.preferredVertical(req.scope) : null;
+    let out: CopilotStateType | undefined;
+
+    try {
+      const graphStream = (await this.graph.stream(
+        { query: req.query, scope: req.scope, locale: req.locale ?? "en", cohort, routingPrior },
+        { streamMode: ["custom", "values"] },
+      )) as AsyncIterable<["custom", TurnStreamPayload] | ["values", CopilotStateType]>;
+
+      for await (const [mode, payload] of graphStream) {
+        if (mode === "values") {
+          // Cross-mode ordering is NOT guaranteed (probe-verified: a values
+          // chunk can precede a node's late custom events), so the final state
+          // is only recorded here; usage/done are emitted after the drain.
+          out = payload;
+          continue;
+        }
+        switch (payload.kind) {
+          case "route":
+            yield make({
+              type: "route",
+              vertical: payload.vertical,
+              confidence: payload.confidence,
+              viaFallback: payload.viaFallback,
+              prior: payload.prior,
+            });
+            break;
+          case "citation":
+            yield make({ type: "citation", citations: payload.citations });
+            break;
+          case "token":
+            tokenCount++;
+            yield make({ type: "token", index: payload.chunk.index, text: payload.chunk.text });
+            break;
+          case "note":
+            yield make({ type: "note", note: payload.note });
+            break;
+        }
+      }
+    } catch (err) {
+      if (err instanceof BudgetExceededError) {
+        const reason = "budget: token budget exceeded mid-turn";
+        tracer.emit({ type: "turn.declined", data: { reason } });
+        tracer.emit({ type: "turn.end", data: { declined: true } });
+        yield make({
+          type: "error",
+          code: "BUDGET_EXCEEDED",
+          message: declineAnswer(reason),
+          retryable: false,
+          partial: tokenCount > 0,
+        });
+        return;
+      }
+      // Detail goes to the tracer; only a user-safe sentence crosses the wire.
+      tracer.emit({ type: "turn.error", data: { message: err instanceof Error ? err.message : String(err) } });
+      tracer.emit({ type: "turn.end", data: { failed: true } });
+      yield make({
+        type: "error",
+        code: "UPSTREAM_ERROR",
+        message: "The answer stream failed before completion.",
+        retryable: true,
+        partial: tokenCount > 0,
+      });
+      return;
+    }
+
+    if (!out) throw new Error("graph stream ended without a values chunk");
+
+    if (profileStore && out.route) {
+      profileStore.record(req.scope, out.route.vertical, out.grounded);
+    }
+    tracer.emit({ type: "turn.route", data: { vertical: out.route?.vertical, prior: routingPrior } });
+    tracer.emit({ type: "turn.score", data: { grounded: out.score?.grounded, quality: out.score?.quality } });
+    const usage = summarize(out.usage);
+    tracer.emit({ type: "turn.end", data: { totalTokens: usage.totalTokens, costUsd: usage.costUsd } });
+
+    yield make({ type: "usage", usage });
+    yield make({
+      type: "done",
+      tokenCount,
+      answerBytes: Buffer.byteLength(out.answer, "utf8"),
+      answerSha256: createHash("sha256").update(out.answer, "utf8").digest("hex"),
+      score: out.score ?? null,
+    });
+  }
+
+  /** The three pre-flight gates, in the same order for ask() and stream(),
+   *  mapped to the contract's error taxonomy. */
+  private preflightDecline(
+    req: CopilotRequest,
+  ): { code: StreamErrorCode; reason: string } | null {
+    const { rateLimiter, relevanceGuard, budget } = this.guards;
+    if (rateLimiter && !rateLimiter.tryConsume(req.scope.userId)) {
+      return { code: "RATE_LIMITED", reason: "rate-limit: per-user request cap reached" };
+    }
+    if (relevanceGuard && !relevanceGuard.isRelevant(req.query)) {
+      return { code: "IRRELEVANT_QUERY", reason: "off-topic: query outside supported domains" };
+    }
+    if (budget && budget.remaining(req.scope.orgId) <= 0) {
+      return { code: "BUDGET_EXCEEDED", reason: "budget: org token budget exhausted" };
+    }
+    return null;
+  }
+
   private declined(req: CopilotRequest, reason: string, tracer: Tracer): CopilotAnswer {
     tracer.emit({ type: "turn.declined", data: { reason } });
     tracer.emit({ type: "turn.end", data: { declined: true } });
     return {
       query: req.query,
       route: null,
-      answer: `Request declined — ${reason}.`,
+      answer: declineAnswer(reason),
       citations: [],
       notes: [`declined:${reason}`],
       usage: EMPTY_USAGE,

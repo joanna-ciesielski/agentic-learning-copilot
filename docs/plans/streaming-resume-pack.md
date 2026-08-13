@@ -6,7 +6,7 @@ session on the SSE streaming layer. Read it, then read
 plan's Fixed Decisions and the decisions recorded in
 [`../streaming-contract.md`](../streaming-contract.md) §14 are both binding.
 
-**Last updated:** 2026-08-12 · **Current phase:** Phase 1 (Streaming ChatModel) — delivered, awaiting DoD confirmation
+**Last updated:** 2026-08-12 · **Current phase:** Phase 2 (Graph event stream) — delivered, awaiting DoD confirmation
 
 ---
 
@@ -14,41 +14,30 @@ plan's Fixed Decisions and the decisions recorded in
 
 | Phase | State |
 | --- | --- |
-| 0 — Contract & ADR | **Signed off.** Branch `phase-0/streaming-contract`, not yet merged. |
-| 1 — Streaming ChatModel | **Delivered, awaiting DoD confirmation.** Branch `phase-1/streaming-chatmodel`, stacked on Phase 0. |
-| 2 — Graph event stream | Not started. Blocked on Phase 1 sign-off. |
-| 3 — SSE server | Not started. |
+| 0 — Contract & ADR | **Signed off.** Merged (or merging) via PR from `phase-0/streaming-contract`. |
+| 1 — Streaming ChatModel | **Signed off** (senior review applied: early-close leak fixed, TierSchema two-way drift guard). Merged via PR from `phase-1/streaming-chatmodel`. |
+| 2 — Graph event stream | **Delivered, awaiting DoD confirmation.** Branch `phase-2/graph-event-stream`, stacked on Phase 1. |
+| 3 — SSE server | Not started. Blocked on Phase 2 sign-off. |
 | 4 — Demo client & state management | Not started. |
 | 5 — Hardening & load | Not started. |
 | 6 — Docs & portfolio assets | Not started. |
 
-Neither branch is pushed: the sandbox git proxy denies credentials for
-`JoannaCiesielski/agentic-learning-copilot` until the repo is added to the
-session's authorized sources. Both phases were delivered as `git apply` patches
-in the meantime.
+Canonical remote: `github.com/joanna-ciesielski/agentic-learning-copilot` (the
+hyphenated account; its `main` was force-updated to the complete history on
+2026-08-12 — the `JoannaCiesielski` copy is stale and slated for archiving).
 
-## 2. What has landed
-
-**Phase 0 — contract & ADR (branch `phase-0/streaming-contract`)**
-
-| File | Purpose |
-| --- | --- |
-| `docs/plans/streaming-plan.md` | The build plan, verbatim. |
-| `docs/streaming-contract.md` | Contract v1.0, status **accepted**. Envelope, catalog, sequencing S1–S8, parity P1–P3, error taxonomy, resume R1–R6, Unicode U1–U4, SSE binding, §14 decisions. |
-| `docs/adr/0008-sse-streaming.md` | SSE vs WebSockets vs long-poll; native `http` vs framework; ring buffer vs persistent log. |
-| `src/streaming/events.ts` | Contract-as-code: strict zod schemas, types, constants. No behaviour. |
-| `tests/streamingContract.test.ts` | Catalog shape + drift guards. |
-
-**Phase 1 — streaming ChatModel (branch `phase-1/streaming-chatmodel`)**
+## 2. What Phase 2 added
 
 | File | Change |
 | --- | --- |
-| `src/streaming/chunking.ts` | New. `chunkByGraphemes` — lossless, grapheme-safe, deterministic. The load-bearing piece of parity. |
-| `src/llm/chatModel.ts` | `TokenChunk`; optional `streamComplete?` on `ChatModel`; `StreamingChatModel`; `isStreamingChatModel`; `streamOrFallback`; `MockChatModel` streaming + `MockChatModelOptions`. `complete()` untouched. |
-| `src/llm/modelGateway.ts` | `streamComplete()` on the gateway, sharing `cacheHit`/`reserve`/`release`/`settle` with `complete()`. `isStreamingGateway`, `StreamingModelGateway`, `GatewayServices.streamChunkSize`. |
-| `src/index.ts` | Exports for both phases' new surface. |
-| `tests/streamingParity.test.ts` | **P1 parity**, written before the implementation. Byte-equality over the full corpus, the Arabic fixtures, and eleven Unicode edge cases × seven chunk sizes. |
-| `tests/streamingGateway.test.ts` | Accounting parity: reservation, release, cache, metrics, tenant namespacing, non-streaming fallback. |
+| `src/streaming/payloads.ts` | New. Pre-envelope node payloads (`route`/`citation`/`token`/`note`), `TurnStreamSink`, `sinkOf(config)`. Nodes are envelope-ignorant by design. |
+| `src/streaming/chunking.ts` | `indexedChunks` — grapheme chunks with contiguous ordinals (structural type to avoid a cycle with `chatModel`). |
+| `src/agents/verticalAgent.ts` | Optional `sink` param on `run()`. Citations emitted BEFORE the answer call (S3); answer streamed via the gateway; empty-retrieval canned answer replayed as chunks (parity covers that branch); batch-only-gateway fallback replay. |
+| `src/graph/build.ts` | Nodes take `(state, config)` and emit payloads via LangGraph's custom-mode writer when present; `noted()` keeps streamed notes and state notes from one array. `ask()` behaviour unchanged (no writer under `invoke()`). |
+| `src/graph/copilot.ts` | `stream(req, opts)` — envelope + monotonic `seq` applied in one place; every event zod-validated before yield; pre-flight gates extracted to `preflightDecline()` shared with `ask()`; `declineAnswer()` makes P2 structural; error taxonomy mapping; sha256/bytes/tokenCount witnesses on `done`; tracer/profile/rate-limit side effects mirror `ask()`. |
+| `docs/adr/0008-sse-streaming.md` | Addendum recorded: custom stream mode chosen over `messages` mode and Tracer transport, with probe evidence. |
+| `docs/plans/streaming-plan.md` | Stale repo URL corrected to the hyphenated account. |
+| `tests/streamingCopilot.test.ts` | 23 e2e tests, written first: P1 over every routing fixture + Arabic; P2 decline parity (verbatim message equality); S1–S8 sequencing; budget-kill in the router→answer window; mid-stream provider failure → `partial:true`; tenant markers; tracer mirroring; threadId validation; injectable clock. |
 
 ## 3. Baseline (verified 2026-08-12)
 
@@ -56,93 +45,77 @@ in the meantime.
 npm ci
 npm run typecheck   # clean
 npm run lint        # clean
-npm test            # 20 files, 220 tests
+npm test            # 21 files, 243 tests (108 pre-existing untouched)
 npm run test:coverage
-#   Statements 98.5%  Branches 90.48%  Functions 98.83%  Lines 99.3%
-#   thresholds: 85 across the board
+#   Statements 98.42%  Branches 89.44%  Functions 98.88%  Lines 99.24%
 ```
 
-Per-file coverage on everything Phase 1 added or changed — `chunking.ts`,
-`events.ts`, `chatModel.ts`, `modelGateway.ts` — is **100% / 100% / 100%**,
-against a DoD floor of 90%.
+Remaining uncovered lines are deliberate: the `if (!out)` defensive throw in
+`stream()` (unreachable via public API), the `BUDGET_EXCEEDED partial:true`
+branch (unreachable by construction — see contract §5), and `sinkOf`'s
+non-function-writer arm.
 
-The 108 pre-existing tests are untouched: `git diff main -- tests/` shows new
-files only, no modifications.
+## 4. Design decisions made during Phase 2
 
-## 4. Design decisions made during Phase 1
+1. **Custom stream mode, not `messages` mode, not the Tracer.** Full rationale
+   and probe evidence in the ADR 0008 addendum. Key operational fact: cross-mode
+   ordering between `custom` and `values` chunks is NOT guaranteed, so `usage`/
+   `done` are emitted only after the graph stream drains.
+2. **One compiled graph, two delivery modes.** Nodes guard every emission on
+   `sinkOf(config)`; under `invoke()` there is no writer, so `ask()` runs the
+   byte-identical pre-streaming path. No second graph, no second policy path.
+3. **P2 is structural.** `declineAnswer()` is the single source of the decline
+   wording; `ask()` returns it, `stream()` carries it on the error event. The
+   parity test asserts strict string equality against a separately-built copilot.
+4. **`stream()` never throws once events flow** (except invalid `threadId`,
+   which throws before the first event). Unexpected errors become terminal
+   `UPSTREAM_ERROR` events with a generic message; detail goes to the tracer.
+   This is a documented divergence from `ask()`, which rethrows.
+5. **Empty retrieval streams the canned answer.** `ask()` returns it with
+   `declined:false`, so P1 applies — the agent replays it via `indexedChunks`
+   with no model call and no citation event.
+6. **Every outbound event is schema-validated.** Cheap at mock scale; if Phase 5
+   load runs show it hot, make it opt-out there with the measurement in hand.
 
-Recorded here because they are not in the plan and the next session will
-otherwise re-litigate them.
+## 5. Open item carried to Phase 3
 
-1. **Grapheme chunking, not tokenizer chunking.** The plan says "tokenizer-based
-   chunking". The repo's `tokenize()` splits on `[^\p{L}\p{N}]+` and **discards
-   the separators**, so rejoining its output loses every space and newline —
-   parity would fail on the first fixture. `chunkByGraphemes` segments with
-   `Intl.Segmenter` instead. Same bug class ADR 0007 fixed one layer down.
-2. **`streamComplete` is optional on both interfaces.** Adding a required method
-   to `ChatModel`/`ModelGateway` would break any implementer. `streamOrFallback`
-   degrades a non-streaming provider to one chunk carrying the whole answer, so
-   parity holds trivially rather than being unavailable.
-3. **The generator's return value is the settled `CompletionResult`.**
-   `AsyncGenerator<TokenChunk, CompletionResult>` — a `for await` consumer sees
-   only chunks; Phase 2 drives `.next()` manually to get usage. No side channel.
-4. **The gateway's `finally` closes TWO leaks, in order.** A consumer that
-   `break`s out of the stream triggers the generator's `return`, which lands in
-   `finally`. First the budget reservation is released (otherwise an aborted
-   client leaves the org permanently short); then the upstream source generator
-   is explicitly closed — a manual `.next()` loop does not propagate close the
-   way `for await` does, so without `source.return()` the provider keeps
-   generating tokens nobody reads. The release comes first so a failing provider
-   cleanup can never skip it. Both paths have regression tests; this is the
-   model-layer half of Phase 3's abort-cancels-run assertion.
-5. **`complete()` and `streamComplete()` share private helpers.** `cacheHit`,
-   `reserve`, `release`, `settle`. Streaming is a delivery mechanism, not a
-   second accounting path — there is no route through the gateway that spends
-   tokens without a reservation, a reconciliation and a metric. This refactored
-   `complete()`'s internals; behaviour is unchanged, proven by the 108
-   pre-existing tests staying green.
-6. **Pinned locale on the segmenter.** `new Intl.Segmenter("en", …)` rather than
-   the runtime default, so a CI machine's locale cannot shift chunk boundaries
-   and make streamed output non-reproducible.
+Consumer `break` on `Copilot.stream()` propagates close through the graph
+stream, and the gateway's `finally` releases reservation + closes the provider
+stream (Phase 1's fix). What Phase 3 must add: the HTTP layer's client-abort →
+`AbortSignal` → graph cancellation, asserted by mock call counts (no orphaned
+model calls between nodes).
 
-## 5. Next action — Phase 2 (graph event stream)
+## 6. Next action — Phase 3 (SSE server)
 
-Do not start until Phase 1's DoD is confirmed.
+Do not start until Phase 2's DoD is confirmed.
 
-1. Branch `phase-2/graph-event-stream` off `phase-1/streaming-chatmodel`.
-2. **Open with the 1h LangGraph spike** the plan's risk register calls for: does
-   `@langchain/langgraph` v1.4.8 expose a usable token-level stream, or do events
-   come from the existing `Tracer` seam? Record the answer as the ADR 0008
-   addendum — the stub for it is already at the bottom of that file.
-3. Write the e2e parity test first: `concat(token events) === ask().answer` for
-   every routing fixture, plus the Arabic ones.
-4. Then `Copilot.stream(req): AsyncIterable<CopilotEvent>` beside `ask()`,
-   emitting `route` → `citation` → `token`* → `usage` → `done` per contract
-   §4 S1–S8.
-5. Guards: pre-flight declines emit a single terminal `error` whose `message`
-   equals `ask().answer` verbatim (contract P2) and no other events.
-6. **Budget-kill test targets the router→answer window, not mid-token.**
-   Pre-flight reservation reserves the whole answer before the first chunk, so a
-   mid-answer kill is unreachable by construction. A test that tries would pass
-   for the wrong reason. See contract §5.
-7. Also required by the Phase 2 DoD: tenant-isolation streaming test reusing
-   `TENANT_MARKERS`, and a strictly-monotonic `seq` test.
+1. Branch `phase-3/sse-server` off `phase-2/graph-event-stream`.
+2. Write the transport tests first with real HTTP (`node:http` + `fetch` +
+   manual `ReadableStream` SSE parsing, no client lib): framing, heartbeat,
+   resume-within-buffer, resume-after-eviction (`RESUME_GAP`), abort-cancels-run.
+3. `src/server/sse.ts` (framing + ring buffer + backpressure per contract §§7–9,
+   11) and `src/server/index.ts` (`POST /v1/chat` on `node:http`).
+4. Constants already in the contract: heartbeat 15s, ring 512×256 LRU,
+   `retry: 2000`, headers incl. `X-Streaming-Contract-Version: 1.0`.
+5. Heartbeats: full envelope, no `id:` line, never buffered (§8).
+6. `npm run serve` script; zero new runtime dependencies.
 
-## 6. Commands to resume
+## 7. Commands to resume
 
 ```bash
-git checkout phase-1/streaming-chatmodel
+git checkout phase-2/graph-event-stream
 npm ci
 npm run typecheck && npm run lint && npm test && npm run test:coverage
 
-# Phase 2 starts here
-git checkout -b phase-2/graph-event-stream
+# Phase 3 starts here
+git checkout -b phase-3/sse-server
 
-# The parity tests, run alone
-npx vitest run tests/streamingParity.test.ts tests/streamingGateway.test.ts
+# Streaming suites alone
+npx vitest run tests/streamingContract.test.ts tests/streamingParity.test.ts \
+  tests/streamingGateway.test.ts tests/streamingCopilot.test.ts
 ```
 
-## 7. Standing rules in force
+## 8. Standing rules in force
 
 One phase at a time, in order; plan + self-audit before code in each phase; the
 108 pre-existing tests are never modified; zero new runtime dependencies

@@ -60,3 +60,17 @@ export function chunkByGraphemes(text: string, size: number = DEFAULT_CHUNK_SIZE
 
   return chunks;
 }
+
+/**
+ * `chunkByGraphemes` with contiguous 0-based ordinals attached — the shape the
+ * streaming contract's `token.index` requires. The chunk type is structural
+ * (same shape as `TokenChunk`) rather than imported, to avoid a module cycle
+ * with `llm/chatModel`, which imports this file.
+ */
+export function* indexedChunks(
+  text: string,
+  size: number = DEFAULT_CHUNK_SIZE,
+): Generator<{ index: number; text: string }> {
+  let index = 0;
+  for (const piece of chunkByGraphemes(text, size)) yield { index: index++, text: piece };
+}
