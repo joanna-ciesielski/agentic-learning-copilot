@@ -143,6 +143,9 @@ function renderLoop(now) {
   // happened in the gap, not "1 per hitch" — a 5-second freeze is ~300 missed
   // frames, and a counter that says "1" for it would be lying.
   if (delta > 34) state.droppedFrames += Math.max(1, Math.round(delta / 16.7) - 1);
+  // …but a BACKGROUND tab is not a freeze: browsers pause rAF entirely when
+  // the tab is hidden, so that gap is invisibility, not jank. The
+  // visibilitychange handler below resets the frame clock so it isn't booked.
 
   // PATTERN 1: drain everything that arrived since the last frame...
   const batch = state.buffer;
@@ -163,6 +166,12 @@ function renderLoop(now) {
   requestAnimationFrame(renderLoop);
 }
 requestAnimationFrame(renderLoop);
+
+document.addEventListener("visibilitychange", () => {
+  // Re-arm the frame clock when the tab becomes visible again, so time spent
+  // hidden (rAF suspended by the browser) is never counted as dropped frames.
+  lastFrameTs = performance.now();
+});
 
 /* ------------------------------------------------------- event handling -- */
 

@@ -82,7 +82,10 @@ the render architecture is the only variable.
 Note on the dropped-frames counter: it counts the frames that *should have
 fired* during a gap (a 5-second freeze ≈ 300 missed frames), because a counter
 that reports a total freeze as "1 hitch" would be lying — and during a full
-freeze the fps stat can't update at all, which is itself the tell.
+freeze the fps stat can't update at all, which is itself the tell. Time spent
+in a background tab is excluded: browsers suspend `requestAnimationFrame`
+entirely when a tab is hidden, so that gap is invisibility, not jank — the
+frame clock re-arms on `visibilitychange`.
 
 ## What each pattern buys (labels in demo/client.html)
 
