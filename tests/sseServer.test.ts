@@ -378,6 +378,69 @@ describe("SSE server — units (ring buffer LRU, backpressure)", () => {
   });
 });
 
+describe("SSE server — demo assets and stress mode (Phase 4)", () => {
+  it("serves the demo client at GET /", async () => {
+    const base = await offlineServer();
+    const res = await fetch(base);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const html = await res.text();
+    expect(html).toContain("<!doctype html>");
+    expect(html).toContain("PATTERN 1"); // the labeled teaching patterns ship in the file
+    expect(html).toContain("PATTERN 6");
+  });
+
+  it("streams synthetic contract-valid events at the requested count", async () => {
+    const base = await offlineServer();
+    const res = await fetch(`${base}/v1/stress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rate: 5000, count: 400, threadId: "t-stress" }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+
+    const events = eventsOf(parseFrames(await res.text()));
+    const tokens = events.filter((e): e is TokenEvent => e.type === "token");
+    expect(tokens).toHaveLength(400);
+    expect(tokens.map((t) => t.index)).toEqual(tokens.map((_, i) => i));
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i]!.seq).toBeGreaterThan(events[i - 1]!.seq);
+    }
+
+    const done = events.at(-1)!;
+    expect(done.type).toBe("done");
+    if (done.type === "done") {
+      const text = tokens.map((t) => t.text).join("");
+      expect(done.tokenCount).toBe(400);
+      expect(done.answerBytes).toBe(Buffer.byteLength(text, "utf8"));
+      expect(done.answerSha256).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
+    }
+  });
+
+  it("clamps stress parameters instead of failing", async () => {
+    const base = await offlineServer();
+    const res = await fetch(`${base}/v1/stress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rate: 999_999, count: 50 }),
+    });
+    expect(res.status).toBe(200);
+    const events = eventsOf(parseFrames(await res.text()));
+    expect(events.filter((e) => e.type === "token")).toHaveLength(50);
+  });
+
+  it("rejects malformed stress bodies with 400", async () => {
+    const base = await offlineServer();
+    const res = await fetch(`${base}/v1/stress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: "many" }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("SSE server — lifecycle (abort cancels the run)", () => {
   it("client abort during routing prevents the answer call entirely", async () => {
     // A model whose routing call is slow, so the abort deterministically lands

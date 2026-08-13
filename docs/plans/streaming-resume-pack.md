@@ -6,7 +6,7 @@ session on the SSE streaming layer. Read it, then read
 plan's Fixed Decisions and the decisions recorded in
 [`../streaming-contract.md`](../streaming-contract.md) §14 are both binding.
 
-**Last updated:** 2026-08-13 · **Current phase:** Phase 3 (SSE server) — delivered, awaiting DoD confirmation
+**Last updated:** 2026-08-13 · **Current phase:** Phase 4 (demo client & state management) — delivered, awaiting DoD confirmation
 
 ---
 
@@ -17,8 +17,8 @@ plan's Fixed Decisions and the decisions recorded in
 | 0 — Contract & ADR | Merged to `main`. |
 | 1 — Streaming ChatModel | Merged to `main`. |
 | 2 — Graph event stream | Merged to `main` (`c72fabe`). |
-| 3 — SSE server | **Delivered, awaiting DoD confirmation.** Branch `phase-3/sse-server`. |
-| 4 — Demo client & state management | Not started. Blocked on Phase 3 sign-off. |
+| 3 — SSE server | Merged to `main` (`e1dcfc9`). |
+| 4 — Demo client & state management | **Delivered, awaiting DoD confirmation.** Branch `phase-4/demo-client`. |
 | 5 — Hardening & load | Not started. |
 | 6 — Docs & portfolio assets | Not started. |
 
@@ -26,18 +26,21 @@ Canonical remote: `github.com/joanna-ciesielski/agentic-learning-copilot`.
 Delivery is by git bundle until the repo is added to the sandbox session's
 authorized sources (pushes 403 otherwise).
 
-## 2. What Phase 3 added
+## 2. What Phase 4 added (Phase 3 summary now lives in git history)
 
 | File | Change |
 | --- | --- |
-| `src/server/ringBuffer.ts` | `ThreadRingBuffer` — per-thread replay buffer, LRU across threads. Gap rule is `lastEventId < evictedThrough`, NOT seq contiguity (heartbeats make buffered seqs non-contiguous). |
-| `src/server/sse.ts` | Framing per contract §9 (single `data:` line; heartbeats without `id:`), headers, `retry:` once, `awaitDrain` backpressure with disconnect-on-stall. |
-| `src/server/index.ts` | `createCopilotServer` — `POST /v1/chat` on `node:http`. Body validation (strict zod, 64 KiB cap → 413), Last-Event-ID resume, R7 dead-turn close, R8 buffer reset, client abort → `AbortSignal`. |
-| `src/server/cli.ts` | `npm run serve` — offline demo server (mock model, 15 ms chunk delay, fixture corpus incl. Arabic). |
-| `src/graph/copilot.ts` | `StreamOptions.heartbeatMs` (heartbeats minted in the EVENT layer — they consume `seq` from the stream's single counter) and `StreamOptions.signal` (threaded to `graph.stream` config; on abort the stream stops with no terminal event). Pull loop rewritten as race-with-heartbeat; graph iterator explicitly closed in `finally`. |
-| `docs/streaming-contract.md` | R7 (dead-turn resume closes with terminal error) and R8 (fresh POST resets the thread's logical stream) — additive, wire schema unchanged. |
-| `package.json` / `vitest.config.ts` | `serve` script; `src/server/cli.ts` added to the coverage excludes alongside the other CLIs. |
-| `tests/sseServer.test.ts` | 23 tests over real HTTP (fetch + manual SSE parsing, no client lib): framing/headers, transport-level byte parity, 400/404/405/413, resume within buffer, RESUME_GAP on eviction and unknown thread, R5, R7, R8, heartbeats (no `id:`, never buffered, seq stays monotonic), abort-cancels-run by model call counts, ring-buffer LRU + drain units. |
+| `demo/client.html` | The teaching artifact: one self-contained file, vanilla JS, no build step. Six labeled patterns (`PATTERN 1`–`6`): rAF-decoupled ingestion, per-frame token coalescing, monotonic seq + token.index gap guards, hand-rolled fetch-SSE reader with Last-Event-ID resume, 500 ms-windowed latency HUD, stress mode. The anti-pattern ships too, deliberately: batching OFF does `innerHTML +=` + per-event `scrollHeight` (bounded so it degrades instead of tar-pitting). Client-side parity checker hashes rendered tokens against `done.answerSha256`. |
+| `src/server/index.ts` | `GET /` serves the demo; `POST /v1/stress` mints synthetic contract-valid token events at the wire (clamped rate ≤10k/s, count ≤100k), no copilot, not buffered for resume, real parity witnesses on `done`. |
+| `docs/demo.md` | Manual script with measured numbers (headless Chromium): batching ON = 60 fps / ~2,850 evts/s / 0–2 dropped over 12k events; OFF = main thread frozen ~5 s on 3k events, fps 26 / frame 37.9 ms at recovery, 110+ missed frames. |
+| `docs/assets/streaming-demo.png` | Portfolio screenshot captured from a live browser run mid-stress. |
+| `tests/sseServer.test.ts` | +4 tests: demo served at `/`, stress stream shape/witnesses at count, parameter clamping, malformed stress body. |
+
+Browser verification (not committed; Playwright + preinstalled Chromium against
+`npm run serve`): real turn streams with PARITY OK badge; drop→resume flow ends
+in R7 as designed; batching ON holds 60 fps at 3k evts/s; batching OFF degrades
+measurably. The dropped-frames counter counts frames that SHOULD have fired
+during a gap (a freeze ≈ hundreds), not "1 per hitch".
 
 ## 3. Baseline (verified 2026-08-13)
 
@@ -45,75 +48,55 @@ authorized sources (pushes 403 otherwise).
 npm ci
 npm run typecheck   # clean
 npm run lint        # clean
-npm test            # 22 files, 266 tests (108 pre-existing untouched)
+npm test            # 22 files, 270 tests (108 pre-existing untouched)
 npm run test:coverage
-#   Statements 97.8%  Branches 88.72%  Functions 98.57%  Lines 98.99%
-npm run serve       # POST /v1/chat on :3000, offline
+#   Statements 97.31%  Branches 87.42%  Functions 98.61%  Lines 98.69%
+npm run serve       # then open http://localhost:3000
 ```
 
-Uncovered remainder in `src/server/index.ts` is the in-loop backpressure branch
-(needs a genuinely slow client — `awaitDrain` itself is unit-tested) and the
-top-level late-failure catch; both are Phase 5 probe targets per the plan's
-failure catalog.
+## 4. Design decisions made during Phase 4
 
-## 4. Design decisions made during Phase 3
+1. **Stress is transport-only and unbuffered.** Synthetic events are minted at
+   the wire; buffering 100k throwaway events would evict real turns from the
+   ring. Stress streams are documented as non-resumable.
+2. **The anti-pattern is bounded on purpose.** Unbounded `innerHTML +=` is
+   quadratic and tar-pits the tab for minutes — which demonstrates nothing but
+   a frozen page. Trimmed, its per-event cost is high-but-constant: fps
+   collapses, the stream still finishes, the toggle stays usable.
+3. **Honest dropped-frame accounting.** A fully frozen main thread fires no
+   rAF at all, so "1 per hitch" under-reports precisely when it matters most.
+   The counter adds `delta/16.7 − 1` per gap.
+4. **Stress params clamp, never 400.** The demo's own sliders must not be able
+   to produce an error; out-of-range values saturate at the caps.
+5. **EventSource does not apply** (the endpoint is POST); the client hand-rolls
+   the reader — which is exactly PATTERN 4's teaching point.
 
-1. **Heartbeats are minted by the event layer, not the transport.** Audit
-   finding: heartbeats carry the envelope (fixed decision 3) and therefore
-   consume a `seq` — but the seq counter lives in `Copilot.stream()`. A
-   transport-minted heartbeat would race the next live event's seq and break
-   strict monotonicity. So `StreamOptions.heartbeatMs` races the graph pull
-   against a timer inside `stream()`; the transport merely writes heartbeats
-   without `id:` and skips buffering them. The pending graph pull is REUSED
-   across heartbeats (a heartbeat must not abandon or double-pull the graph).
-2. **Gap detection is `evictedThrough`, not seq contiguity.** Buffered seqs are
-   legitimately non-contiguous (heartbeats consume seq without being buffered),
-   so a contiguity check would false-positive RESUME_GAP. The buffer tracks the
-   highest evicted seq per thread instead.
-3. **R7 — dead-turn resume.** The plan's resume text assumed a live turn to
-   rejoin; an aborted turn has none. Replay-then-hang was unacceptable, so an
-   incomplete replay is closed with a terminal `UPSTREAM_ERROR` that is itself
-   buffered. Recorded in the contract as an additive clarification.
-4. **R8 — fresh POST resets the thread buffer.** Without it, two logical
-   streams' seq sequences would interleave in one buffer and resume semantics
-   would be undefined.
-5. **Abort is `AbortSignal` through graph config, not just iterator close.**
-   LangGraph executes ahead of consumption (push-based queue), so closing the
-   consumer iterator alone does not stop the run — the signal does, checked by
-   LangGraph between tasks. Proven by the call-count test: abort during a slow
-   routing call → answer model is never invoked. On abort, `stream()` emits no
-   terminal event (the consumer is gone) and ends silently.
-6. **413 drains rather than destroys.** Destroying the socket mid-upload
-   surfaces as a connection error client-side; the server now discards past the
-   cap and answers a clean 413 (memory still bounded).
+## 5. Next action — Phase 5 (hardening & load)
 
-## 5. Next action — Phase 4 (demo client & state management)
+Do not start until Phase 4's DoD is confirmed.
 
-Do not start until Phase 3's DoD is confirmed.
-
-1. Branch `phase-4/demo-client` off `phase-3/sse-server`.
-2. `demo/client.html` — single self-contained file, vanilla JS, no build step.
-   The six labeled patterns from the plan: rAF-batched render loop decoupled
-   from event ingestion; per-frame token coalescing (single text-node update);
-   monotonic seq guard; reconnect/resume via Last-Event-ID (note: fetch-based
-   SSE — the endpoint is POST, so EventSource does not apply; hand-roll the
-   reader + reconnect); latency HUD (tokens/sec, events/sec, frame time,
-   dropped frames); stress mode.
-3. Stress mode needs a server flag streaming synthetic events at 1–5k
-   events/sec — add a `/v1/stress` route or query flag to `src/server` in this
-   phase (transport-only; no copilot involvement), per the plan.
-4. `docs/demo.md` with the manual script and expected numbers; screenshot/gif
-   for the portfolio card.
+1. Branch `phase-5/hardening` off `phase-4/demo-client`.
+2. `autocannon` as a devDependency (the one the plan explicitly allows): 100
+   concurrent streams against the mock model; record p50/p99 TTFB and memory
+   ceiling in `docs/streaming-perf.md`; assert no listener leaks.
+3. Failure-catalog additions to `docs/failure-modes.md`: slow client (the
+   uncovered `awaitDrain` in-loop branch is the probe target), mid-stream
+   provider failure, resume storm, heartbeat-only idle connection, duplicate
+   Last-Event-ID.
+4. DoD: every failure mode has a test or documented manual probe; CI green on
+   Node 20 & 22; coverage ≥85% branch on new modules, ≥89% overall (currently
+   87.42% overall branch — the gap is the server's defensive branches; Phase 5
+   probes should close most of it).
 
 ## 6. Commands to resume
 
 ```bash
-git checkout phase-3/sse-server
+git checkout phase-4/demo-client
 npm ci
 npm run typecheck && npm run lint && npm test && npm run test:coverage
 npm run serve
 
-git checkout -b phase-4/demo-client
+git checkout -b phase-5/hardening
 
 npx vitest run tests/sseServer.test.ts
 ```
