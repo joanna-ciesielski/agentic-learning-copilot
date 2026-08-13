@@ -21,6 +21,7 @@ import { NULL_TRACER, type Tracer } from "../observability/tracer";
 import {
   CopilotEventSchema,
   ThreadIdSchema,
+  HEARTBEAT_INTERVAL_MS,
   type CopilotEvent,
   type StreamErrorCode,
 } from "../streaming/events";
@@ -100,6 +101,37 @@ export interface StreamOptions {
   threadId?: string;
   /** Injectable clock for the `ts` envelope field (deterministic tests). */
   clock?: () => number;
+  /**
+   * Silence threshold after which a `heartbeat` event is emitted (contract §8).
+   * Heartbeats live in the EVENT layer, not the transport, because they consume
+   * a `seq` from the stream's single monotonic counter — a transport-minted
+   * heartbeat would race the next live event's seq and break monotonicity.
+   * Defaults to the contract cadence; 0 disables.
+   */
+  heartbeatMs?: number;
+  /** Cancels the underlying graph run (client abort → no orphaned model calls).
+   *  On abort the stream simply stops — no terminal event is emitted, because
+   *  the consumer that would read it is gone. */
+  signal?: AbortSignal;
+}
+
+const HEARTBEAT_DUE: unique symbol = Symbol("heartbeat-due");
+
+/** Race a pending pull against the heartbeat clock. The timer is always
+ *  cleared — a stray timeout would hold the process open. */
+async function nextOrHeartbeat<T>(pending: Promise<T>, ms: number): Promise<T | typeof HEARTBEAT_DUE> {
+  if (ms <= 0) return pending;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<typeof HEARTBEAT_DUE>((resolve) => {
+        timer = setTimeout(() => resolve(HEARTBEAT_DUE), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The one place the decline wording lives. `ask()` returns it as the answer
@@ -250,45 +282,76 @@ export class Copilot {
     }
 
     const routingPrior = profileStore ? profileStore.preferredVertical(req.scope) : null;
+    const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_INTERVAL_MS;
     let out: CopilotStateType | undefined;
 
     try {
       const graphStream = (await this.graph.stream(
         { query: req.query, scope: req.scope, locale: req.locale ?? "en", cohort, routingPrior },
-        { streamMode: ["custom", "values"] },
+        { streamMode: ["custom", "values"], signal: opts.signal },
       )) as AsyncIterable<["custom", TurnStreamPayload] | ["values", CopilotStateType]>;
 
-      for await (const [mode, payload] of graphStream) {
-        if (mode === "values") {
-          // Cross-mode ordering is NOT guaranteed (probe-verified: a values
-          // chunk can precede a node's late custom events), so the final state
-          // is only recorded here; usage/done are emitted after the drain.
-          out = payload;
-          continue;
+      const iterator = graphStream[Symbol.asyncIterator]();
+      let pending: ReturnType<typeof iterator.next> | undefined;
+      try {
+        for (;;) {
+          // Keep the SAME pending pull across heartbeats: the heartbeat loses
+          // the race, it must not abandon (or double-pull) the graph.
+          pending ??= iterator.next();
+          const winner = await nextOrHeartbeat(pending, heartbeatMs);
+          if (winner === HEARTBEAT_DUE) {
+            yield make({ type: "heartbeat" });
+            continue;
+          }
+          pending = undefined;
+          if (winner.done) break;
+
+          const [mode, payload] = winner.value;
+          if (mode === "values") {
+            // Cross-mode ordering is NOT guaranteed (probe-verified: a values
+            // chunk can precede a node's late custom events), so the final state
+            // is only recorded here; usage/done are emitted after the drain.
+            out = payload;
+            continue;
+          }
+          switch (payload.kind) {
+            case "route":
+              yield make({
+                type: "route",
+                vertical: payload.vertical,
+                confidence: payload.confidence,
+                viaFallback: payload.viaFallback,
+                prior: payload.prior,
+              });
+              break;
+            case "citation":
+              yield make({ type: "citation", citations: payload.citations });
+              break;
+            case "token":
+              tokenCount++;
+              yield make({ type: "token", index: payload.chunk.index, text: payload.chunk.text });
+              break;
+            case "note":
+              yield make({ type: "note", note: payload.note });
+              break;
+          }
         }
-        switch (payload.kind) {
-          case "route":
-            yield make({
-              type: "route",
-              vertical: payload.vertical,
-              confidence: payload.confidence,
-              viaFallback: payload.viaFallback,
-              prior: payload.prior,
-            });
-            break;
-          case "citation":
-            yield make({ type: "citation", citations: payload.citations });
-            break;
-          case "token":
-            tokenCount++;
-            yield make({ type: "token", index: payload.chunk.index, text: payload.chunk.text });
-            break;
-          case "note":
-            yield make({ type: "note", note: payload.note });
-            break;
+      } finally {
+        // A consumer break lands here with the graph still live; closing the
+        // iterator propagates cancellation down to the gateway and provider
+        // (the Phase 1 machinery). Harmless on an already-finished iterator.
+        try {
+          await iterator.return?.(undefined as never);
+        } catch {
+          // Closing a failed stream must not mask the original error.
         }
       }
     } catch (err) {
+      if (opts.signal?.aborted) {
+        // Client abort: the consumer is gone, so no terminal event is emitted.
+        tracer.emit({ type: "turn.end", data: { aborted: true } });
+        return;
+      }
       if (err instanceof BudgetExceededError) {
         const reason = "budget: token budget exceeded mid-turn";
         tracer.emit({ type: "turn.declined", data: { reason } });

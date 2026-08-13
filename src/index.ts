@@ -49,6 +49,9 @@ export {
   type StreamOptions,
 } from "./graph/copilot";
 
+// SSE server (Phase 3 — transport layer over Copilot.stream())
+export { createCopilotServer, ThreadRingBuffer, writeEvent, writeSseHead, type ServerOptions } from "./server";
+
 // Streaming (contract v1.0 — docs/streaming-contract.md)
 export { chunkByGraphemes, indexedChunks, DEFAULT_CHUNK_SIZE } from "./streaming/chunking";
 export { sinkOf, type TurnStreamPayload, type TurnStreamSink } from "./streaming/payloads";

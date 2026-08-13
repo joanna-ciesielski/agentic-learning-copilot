@@ -14,6 +14,7 @@ export default defineConfig({
         "src/cli.ts",
         "src/eval/cli.ts",
         "src/cost/cli.ts",
+        "src/server/cli.ts",
         "src/fixtures/**",
         "src/eval/dataset.ts",
       ],
