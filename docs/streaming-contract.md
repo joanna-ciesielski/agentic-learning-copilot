@@ -154,6 +154,16 @@ Fixed decision 4: a bounded per-thread ring buffer, no persistence.
 6. **R6** — Buffers are in-memory and single-process. Multi-node resume requires
    sticky sessions or a shared log (Redis/Postgres) — documented as the
    production swap, explicitly out of scope.
+7. **R7** *(added in Phase 3; wire schema unchanged)* — A resume whose replay
+   ends without a terminal event means the original run died mid-turn (e.g. the
+   producing request was aborted). The transport closes the replay with a
+   terminal `error` (`UPSTREAM_ERROR`, `partial: true`, `retryable: false`) and
+   buffers that close, so the client is never left hanging on a dead turn and
+   later resumes replay the same terminal state.
+8. **R8** *(added in Phase 3; wire schema unchanged)* — A fresh `POST` (no
+   `Last-Event-ID`) on an existing `threadId` starts a NEW logical stream: the
+   thread's buffer is reset and `seq` restarts at 1. Two logical streams never
+   share a buffer, so `seq` semantics stay per-stream as §2 defines.
 
 ## 8. Heartbeats
 
