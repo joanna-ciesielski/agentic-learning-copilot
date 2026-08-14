@@ -78,7 +78,10 @@ describe("Copilot.stream — P1 parity with ask()", () => {
       expect(batch.declined).toBe(false);
       expectByteEqual(concatTokens(events), batch.answer);
     }
-  });
+    // ~30 fixtures × two full turns each: legitimately long-running, so the
+    // budget is declared rather than borrowed from vitest's 5s default —
+    // observed 2–7s across machines depending on cache state and load.
+  }, 30_000);
 
   it("done carries verifiable parity witnesses (sha256, bytes, tokenCount)", async () => {
     const req = { query: "explain photosynthesis", scope: SCOPE };
