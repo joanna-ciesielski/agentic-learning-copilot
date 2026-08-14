@@ -41,6 +41,31 @@ export function writeEvent(res: ServerResponse, event: CopilotEvent): boolean {
  * buffer is full, so a typed error cannot be delivered either — destroying the
  * connection is the honest remaining move (measured in Phase 5).
  */
+/**
+ * Drive an event stream onto a response: write each frame, park on `drain`
+ * when the socket pushes back, stop cleanly if the response dies. Extracted
+ * from the request handler so the backpressure branch is unit-testable with a
+ * deterministic fake response — the end-to-end version of this path depends on
+ * kernel socket-buffer sizes, which differ enough across platforms (macOS vs
+ * Linux loopback) to make timing-based integration assertions flaky.
+ */
+export async function pumpEvents(
+  res: ServerResponse,
+  events: AsyncIterable<CopilotEvent>,
+  opts: { drainTimeoutMs: number; onEvent?: (event: CopilotEvent) => void },
+): Promise<void> {
+  for await (const event of events) {
+    opts.onEvent?.(event);
+    if (res.writableEnded || res.destroyed) break;
+    const ok = writeEvent(res, event);
+    if (!ok) {
+      await awaitDrain(res, opts.drainTimeoutMs);
+      if (res.destroyed) break;
+    }
+  }
+  if (!res.writableEnded) res.end();
+}
+
 export function awaitDrain(res: ServerResponse, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
