@@ -430,6 +430,36 @@ describe("SSE server — demo assets and stress mode (Phase 4)", () => {
     expect(events.filter((e) => e.type === "token")).toHaveLength(50);
   });
 
+  it("serves the demo at the /demo alias and rejects GET /v1/stress", async () => {
+    const base = await offlineServer();
+    const demo = await fetch(`${base}/demo`);
+    expect(demo.status).toBe(200);
+    expect(await demo.text()).toContain("PATTERN 1");
+    const get = await fetch(`${base}/v1/stress`);
+    expect(get.status).toBe(405);
+  });
+
+  it("applies defaults on an empty stress body and stops when the client aborts", async () => {
+    const base = await offlineServer();
+    const aborter = new AbortController();
+    const res = await fetch(`${base}/v1/stress`, {
+      method: "POST",
+      body: "", // empty body → default rate/count/threadId
+      signal: aborter.signal,
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const first = await reader.read(); // events flowing under defaults
+    expect(first.done).toBe(false);
+    aborter.abort();
+    // The server's close listener must stop the mint loop; give it a tick and
+    // confirm the server is still healthy by running a normal request.
+    await new Promise((r) => setTimeout(r, 100));
+    const after = await postChat(base);
+    expect(after.status).toBe(200);
+    expect(eventsOf(parseFrames(after.text)).at(-1)?.type).toBe("done");
+  });
+
   it("rejects malformed stress bodies with 400", async () => {
     const base = await offlineServer();
     const res = await fetch(`${base}/v1/stress`, {
@@ -438,6 +468,122 @@ describe("SSE server — demo assets and stress mode (Phase 4)", () => {
       body: JSON.stringify({ count: "many" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("SSE server — hardening (Phase 5 failure catalog)", () => {
+  it("slow client: backpressure pauses the stream, parity still holds end-to-end", async () => {
+    // A large answer against a client that refuses to read for a while: the
+    // socket buffer fills, write() returns false, and the server must park in
+    // awaitDrain rather than buffering without bound — then finish correctly
+    // once the client catches up.
+    const bigAnswer = `chunk ${"lorem ipsum dolor sit amet ".repeat(5000)}`; // ~135 KB
+    const responder = offlineResponder();
+    const model = new MockChatModel(
+      (messages: ChatMessage[]) => {
+        const system = messages.find((m) => m.role === "system")?.content ?? "";
+        return system.includes("routing supervisor") ? responder(messages) : bigAnswer;
+      },
+      // Large chunks: the socket buffer (~16 KB) still fills against a stalled
+      // reader, without minting tens of thousands of events.
+      { chunkSize: 512 },
+    );
+    const copilot = await createCopilot({ model, docs: CORPUS });
+    const base = await start({ copilot });
+
+    const res = await fetch(`${base}/v1/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(CHAT_BODY),
+    });
+    const reader = res.body!.getReader();
+    const first = await reader.read(); // headers + first frames arrive
+    expect(first.done).toBe(false);
+    await new Promise((r) => setTimeout(r, 400)); // stall: kernel buffers fill
+
+    let text = new TextDecoder().decode(first.value);
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += new TextDecoder().decode(value);
+    }
+    const events = eventsOf(parseFrames(text));
+    const streamed = events
+      .filter((e): e is TokenEvent => e.type === "token")
+      .map((t) => t.text)
+      .join("");
+    expect(Buffer.from(streamed, "utf8").equals(Buffer.from(bigAnswer, "utf8"))).toBe(true);
+    expect(events.at(-1)?.type).toBe("done");
+  }, 15_000);
+
+  it("resume storm: concurrent resumes of one thread all replay identically", async () => {
+    const base = await offlineServer();
+    const original = eventsOf(parseFrames((await postChat(base)).text));
+    const cursor = original[0]!.seq;
+
+    const replays = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        postChat(base, CHAT_BODY, { "last-event-id": String(cursor) }).then((r) =>
+          eventsOf(parseFrames(r.text)),
+        ),
+      ),
+    );
+    const expected = original.filter((e) => e.seq > cursor).map((e) => e.seq);
+    for (const replay of replays) {
+      expect(replay.map((e) => e.seq)).toEqual(expected);
+      expect(replay.at(-1)?.type).toBe("done");
+    }
+  });
+
+  it("duplicate Last-Event-ID: repeated identical resumes are idempotent", async () => {
+    const base = await offlineServer();
+    const original = eventsOf(parseFrames((await postChat(base)).text));
+    const cursor = original[1]!.seq;
+
+    const a = eventsOf(parseFrames((await postChat(base, CHAT_BODY, { "last-event-id": String(cursor) })).text));
+    const b = eventsOf(parseFrames((await postChat(base, CHAT_BODY, { "last-event-id": String(cursor) })).text));
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  it("heartbeat-only idle connection: a long silent window is bridged, then completes", async () => {
+    // One slow answer chunk creates a ~300 ms silence; heartbeats at 20 ms
+    // must bridge it (connection alive, seq advancing) before any token.
+    const responder = offlineResponder();
+    const model = new MockChatModel(responder, { delayMs: 300, chunkSize: 4096 });
+    const copilot = await createCopilot({ model, docs: CORPUS });
+    const base = await start({ copilot, heartbeatMs: 20 });
+
+    const events = eventsOf(parseFrames((await postChat(base)).text));
+    const firstTokenPos = events.findIndex((e) => e.type === "token");
+    const heartbeatsBefore = events.slice(0, firstTokenPos).filter((e) => e.type === "heartbeat");
+    expect(heartbeatsBefore.length).toBeGreaterThanOrEqual(3);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("no listener or connection leaks across many sequential streams", async () => {
+    const warnings: Error[] = [];
+    const onWarning = (w: Error) => warnings.push(w);
+    process.on("warning", onWarning);
+
+    const copilot = await createCopilot({ model: new MockChatModel(offlineResponder()), docs: CORPUS });
+    const base = await start({ copilot });
+    const server = servers.at(-1)!;
+
+    for (let i = 0; i < 30; i++) {
+      await postChat(base, { ...CHAT_BODY, threadId: `t-leak-${i}` });
+    }
+    // Let keep-alive sockets settle, then assert the server is back to zero.
+    await new Promise((r) => setTimeout(r, 150));
+    const open = await new Promise<number>((resolve, reject) =>
+      server.getConnections((err, n) => (err ? reject(err) : resolve(n))),
+    );
+    process.off("warning", onWarning);
+
+    // undici keeps a small keep-alive pool (1–2 sockets); the leak signal this
+    // guards against is growth toward the request count, not small constants.
+    expect(open).toBeLessThanOrEqual(4);
+    expect(warnings.filter((w) => w.name === "MaxListenersExceededWarning")).toEqual([]);
   });
 });
 
