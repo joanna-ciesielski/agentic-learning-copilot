@@ -31,14 +31,39 @@ number is offline-fixture rather than real-model, it says so.
 | Vector store beyond in-memory | Preferred | In-memory store behind a `Retriever` interface; MongoDB Atlas / pgvector documented as the production swap | `src/retrieval/`, ADR-0003 |
 | Adaptive self-improvement (stretch) | Preferred | Scoring node → per-user `ProfileStore` → routing prior that **demonstrably changes routing across turns** (verified end-to-end) | `src/memory/`, `src/agents/scorer.ts`, ADR-0006 |
 | Cost projection for ~10K users | Success criterion | `projectMonthlyCost` + CLI: transparent model with a tunable tier mix and cache-hit rate (~$743/mo at the stated assumptions) | `src/cost/projection.ts`, `npm run cost` |
-| Able to teach (docs) | Required | 7 ADRs, an architecture doc, a 10-row failure-mode catalog, and a thorough README | `docs/`, `README.md` |
+| **AI & streaming architecture review** | Advisory focus | A versioned SSE event contract, byte-exact stream/batch parity as a CI invariant, resume/backpressure/abort semantics, and measured load limits — see the section below | `docs/streaming-contract.md`, ADR-0008, `src/server/`, `docs/streaming-perf.md` |
+| Able to teach (docs) | Required | 8 ADRs, an architecture doc, a 15-row failure-mode catalog, a versioned streaming contract, and a thorough README | `docs/`, `README.md` |
+
+## Streaming & client state under load
+
+The streaming layer demonstrates the two things an "AI & Streaming Architecture Review"
+engagement actually reviews: whether the streamed output can be trusted, and whether the
+client survives the event rate.
+
+**Trust.** The stream/batch parity invariant is CI-gated, not asserted: for every fixture
+— Arabic included — the concatenation of streamed tokens is byte-equal to the batch
+answer, chunked on grapheme-cluster boundaries so RTL and multi-byte text cannot break
+it. The `done` event carries sha256/byte-count witnesses, so the demo client *verifies*
+parity independently and shows a red badge on violation. Declines carry identical wording
+on both paths; budgets reserve pre-flight; a client abort cancels the run with zero
+orphaned model calls (pinned deterministically at the event layer).
+
+**Load** (measured, one core, mock model — `docs/streaming-perf.md`): the server
+saturates at ~150–165 turns/sec; at 25-way concurrency the SLO pass is clean (p50 163 ms,
+p99 633 ms full-stream, zero errors); unloaded time-to-first-token is **7.4 ms p50**;
+~3,100 turns leak nothing (post-GC heap returns below start, zero stuck connections).
+The demo client holds **60 fps at 3,000 events/sec** with rAF-batched rendering and
+measurably freezes with per-event DOM writes — the labeled anti-pattern is part of the
+teaching artifact (`docs/demo.md`).
 
 ## Engineering bar
 
-108 tests across 17 files at **98% statement / 89% branch** coverage, **0 npm
-vulnerabilities**, strict TypeScript with zero `any`/`ts-ignore`/`eslint-disable`, and CI
-green on Node 20 & 22 (typecheck → lint → build → coverage → eval). Each phase was built,
-independently code-reviewed, and hardened before the next.
+281 tests across 22 files at **98% statement / 89% branch** coverage, **0 runtime-dependency
+vulnerabilities** (3 runtime deps; the handful of `npm audit` advisories are dev-only, in
+the load-testing toolchain), strict TypeScript, and CI green on Node 20 & 22 (typecheck →
+lint → build → coverage → eval). Each phase was built, independently reviewed, and
+hardened before the next — including two platform-timing test bugs found on macOS and
+fixed by moving the assertions to deterministic layers.
 
 ## What is a demonstrator vs. production
 

@@ -4,16 +4,23 @@
 > upskilling platform — grounded by per-tenant hybrid retrieval, with evaluation,
 > cost, and safety controls. **TypeScript · Node · LangGraph.js.**
 
-[![CI](https://github.com/JoannaCiesielski/agentic-learning-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/JoannaCiesielski/agentic-learning-copilot/actions/workflows/ci.yml)
+[![CI](https://github.com/joanna-ciesielski/agentic-learning-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/joanna-ciesielski/agentic-learning-copilot/actions/workflows/ci.yml)
 
-**Status: all phases (0–4) complete.** A LangGraph.js supervisor routes each query to a
-Courses or Jobs RAG agent over per-tenant hybrid retrieval, with zod-validated routing and
-citations grounded in retrieval, backed by a versioned fixture eval gate; every model call
-runs through a gateway enforcing per-org token budgets, multi-tier routing, caching,
-metrics, and per-user abuse caps; and a Zone-4 self-improvement loop scores each turn into a
-per-user profile that tunes routing on later turns, with Arabic/English multilingual
-retrieval and tracing hooks. Every phase ships tested and CI-gated; the whole graph runs
-offline.
+**Status: core build (phases 0–4) and the streaming layer (phases 0–6) complete.** A
+LangGraph.js supervisor routes each query to a Courses or Jobs RAG agent over per-tenant
+hybrid retrieval, with zod-validated routing and citations grounded in retrieval, backed by
+a versioned fixture eval gate; every model call runs through a gateway enforcing per-org
+token budgets, multi-tier routing, caching, metrics, and per-user abuse caps; a Zone-4
+self-improvement loop tunes routing across turns; and the whole turn now **streams**: a
+versioned SSE event contract, byte-exact parity with the batch path (CI-gated, Arabic
+included), Last-Event-ID resume over a bounded ring buffer, heartbeats, backpressure, and
+a dependency-free demo client that holds 60 fps at 3,000 events/sec. Every phase ships
+tested and CI-gated; everything runs offline.
+
+**See it stream in 30 seconds:** `npm i && npm run serve` → open <http://localhost:3000> —
+ask a question, watch tokens arrive with a client-verified `PARITY OK` badge, then flip
+the stress-mode batching toggle to see *why* the render architecture matters
+([manual script + expected numbers](docs/demo.md)).
 
 ## Why this exists
 
@@ -35,7 +42,9 @@ npm run lint            # eslint (flat config)
 npm test                # vitest — runs fully OFFLINE, no API keys
 npm run test:coverage   # vitest + v8 coverage, gated at 85% (stmts/branch/funcs/lines)
 npm run build           # tsc emit → dist/ (JS + .d.ts + sourcemaps)
-npm run demo -- --org acme "explain how photosynthesis works"   # offline end-to-end
+npm run demo -- --org acme "explain how photosynthesis works"   # offline end-to-end (CLI)
+npm run serve           # SSE streaming server + demo client on :3000 (docs/demo.md)
+npm run load            # streaming load run: SLO pass, saturation probe, TTFB (docs/streaming-perf.md)
 npm run eval            # fixture eval; fails if routing/recall/groundedness regress
 npm run cost            # monthly cost projection for ~10K learners
 ```
@@ -120,12 +129,35 @@ models emit.
 - **Tracing** (`src/observability/tracer.ts`) — turn-lifecycle events
   (`turn.start`/`route`/`score`/`end`) for a LangSmith/PostHog-style sink.
 
-**Quality.** 108 tests (≥85% coverage gate) covering the Phase 1–4 DoD: 100% valid routing,
+**Quality.** 281 tests across 22 files (≥85% coverage gate; 89% branch overall) covering the Phase 1–4 DoD: 100% valid routing,
 zero cross-tenant leakage (unit probes + gated eval metric), zod rejection of off-schema
 output, a green end-to-end graph, the eval gate, the cost controls (budget pre-flight,
 tier-by-cohort, warm-cache-free, per-user cap, metrics), profile-tuned routing across turns,
 bilingual retrieval, and emitted trace events. Numbers are offline-fixture (deterministic
 stand-in responder); a real provider re-runs the identical gates behind the same `ChatModel`.
+
+**Streaming layer (build plan A, phases 0–6).**
+
+- **Event contract v1.0** ([`docs/streaming-contract.md`](docs/streaming-contract.md)) —
+  eight named event types with a `{seq, threadId, ts}` envelope, strict zod schemas as
+  contract-as-code, sequencing rules, an error taxonomy, and resume semantics. ADR-0008
+  records SSE vs WebSockets, native `node:http` vs framework, and ring buffer vs
+  persistent log.
+- **Parity as a CI-gated invariant** — streamed token concatenation is **byte-equal** to
+  the non-streamed answer for every fixture including Arabic; the `done` event carries
+  sha256/byte-count witnesses so clients verify it themselves. Grapheme-safe chunking
+  (`Intl.Segmenter`) is what makes that hold for RTL and multi-byte text.
+- **Same guards, same accounting** — `Copilot.stream()` runs the identical compiled graph
+  as `ask()` (one policy path); budgets reserve pre-flight, declines carry identical
+  wording on both paths, and a client abort cancels the run with no orphaned model calls.
+- **SSE transport on `node:http`** (zero new runtime dependencies) — correct framing,
+  heartbeats that consume `seq` but never the resume cursor, Last-Event-ID replay over a
+  bounded per-thread ring buffer (LRU across threads), backpressure that pauses the graph,
+  and typed `RESUME_GAP` on eviction.
+- **Demo client** ([`demo/client.html`](demo/client.html)) — one dependency-free file
+  teaching six labeled render-lag patterns, with a latency HUD and a stress mode:
+  60 fps at 3,000 events/sec with rAF batching on, a measured main-thread freeze with it
+  off ([numbers](docs/streaming-perf.md)).
 
 ## Roadmap
 
@@ -136,6 +168,7 @@ stand-in responder); a real provider re-runs the identical gates behind the same
 | 2 | Fixture eval set + CI quality gate (routing accuracy, retrieval metrics, groundedness) | ✅ done |
 | 3 | Cost discipline: per-org budgets, multi-tier routing, caching, metrics, anti-abuse | ✅ done |
 | 4 | Self-improvement loop + multilingual (Arabic/English) + tracing | ✅ done |
+| S0–S6 | SSE streaming layer: contract, parity, graph events, transport, demo client, load | ✅ done |
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design, non-goals, and
 effort estimate, and [`docs/adr/`](docs/adr) for architecture decision records.
