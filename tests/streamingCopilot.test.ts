@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createCopilot, type Copilot, type CopilotAnswer } from "../src/graph/copilot";
-import { MockChatModel } from "../src/llm/chatModel";
+import { MockChatModel, type ChatMessage } from "../src/llm/chatModel";
 import { offlineResponder } from "../src/agents/offline";
 import { BudgetLedger } from "../src/cost/budget";
 import { RateLimiter } from "../src/cost/rateLimiter";
@@ -388,6 +388,47 @@ describe("Copilot.stream — tenant isolation and observability", () => {
         }
       }
     }
+  });
+
+  it("an abort during routing prevents the answer call entirely (no orphaned model calls)", async () => {
+    // Deterministic in-process version of the abort guarantee: the signal is
+    // aborted while the routing call is still pending, with no kernel or
+    // socket-close latency involved, so LangGraph's between-task signal check
+    // MUST see it before the agent node. The transport-level test asserts the
+    // disconnect→signal wiring; this one pins the semantics.
+    const responder = offlineResponder();
+    let routingCalls = 0;
+    let answerCalls = 0;
+    const model = {
+      id: "slow-routing",
+      complete: async (messages: ChatMessage[]) => {
+        const system = messages.find((m) => m.role === "system")?.content ?? "";
+        if (system.includes("routing supervisor")) {
+          routingCalls++;
+          await new Promise((r) => setTimeout(r, 120));
+        } else {
+          answerCalls++;
+        }
+        return responder(messages);
+      },
+    };
+    const copilot = await createCopilot({ model, docs: CORPUS });
+
+    const aborter = new AbortController();
+    setTimeout(() => aborter.abort(), 10); // fires while routing sleeps
+    const events = await collect(
+      copilot.stream(
+        { query: "explain photosynthesis", scope: SCOPE },
+        { threadId: THREAD, signal: aborter.signal },
+      ),
+    );
+
+    expect(routingCalls).toBe(1);
+    expect(answerCalls).toBe(0);
+    // On abort the stream ends silently: the consumer is gone by definition,
+    // so no terminal event is owed (see StreamOptions.signal).
+    expect(events.some((e) => e.type === "token")).toBe(false);
+    expect(events.some((e) => e.type === "done")).toBe(false);
   });
 
   it("heartbeatMs: 0 disables heartbeats entirely", async () => {
