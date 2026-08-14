@@ -12,7 +12,7 @@ import {
   type CopilotEvent,
 } from "../streaming/events";
 import { ThreadRingBuffer } from "./ringBuffer";
-import { awaitDrain, writeEvent, writeSseHead } from "./sse";
+import { awaitDrain, pumpEvents, writeEvent, writeSseHead } from "./sse";
 
 export interface ServerOptions {
   copilot: Copilot;
@@ -126,16 +126,7 @@ export function createCopilotServer(options: ServerOptions): Server {
       { threadId, heartbeatMs, clock, signal: aborter.signal },
     );
 
-    for await (const event of events) {
-      buffer.push(event);
-      if (res.writableEnded || res.destroyed) break;
-      const ok = writeEvent(res, event);
-      if (!ok) {
-        await awaitDrain(res, drainTimeoutMs);
-        if (res.destroyed) break;
-      }
-    }
-    if (!res.writableEnded) res.end();
+    await pumpEvents(res, events, { drainTimeoutMs, onEvent: (event) => buffer.push(event) });
   }
 
   /** Contract R3/R4/R7: replay the buffered tail, or a terminal RESUME_GAP; a

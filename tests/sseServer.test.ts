@@ -472,20 +472,94 @@ describe("SSE server — demo assets and stress mode (Phase 4)", () => {
 });
 
 describe("SSE server — hardening (Phase 5 failure catalog)", () => {
-  it("slow client: backpressure pauses the stream, parity still holds end-to-end", async () => {
-    // A large answer against a client that refuses to read for a while: the
-    // socket buffer fills, write() returns false, and the server must park in
-    // awaitDrain rather than buffering without bound — then finish correctly
-    // once the client catches up.
-    const bigAnswer = `chunk ${"lorem ipsum dolor sit amet ".repeat(5000)}`; // ~135 KB
+  it("slow client (unit): a false write() parks the pump until drain, then finishes", async () => {
+    // Deterministic backpressure: the end-to-end version of this path depends
+    // on kernel socket-buffer sizes, which differ across platforms (macOS
+    // loopback buffers made the socket-level variant time out where Linux
+    // passed). The pump is exercised directly against a fake response instead.
+    const { pumpEvents } = await import("../src/server/sse");
+    const { EventEmitter } = await import("node:events");
+
+    const written: string[] = [];
+    let writes = 0;
+    const res = new EventEmitter() as unknown as import("node:http").ServerResponse;
+    Object.assign(res, {
+      writableEnded: false,
+      destroyed: false,
+      write: (s: string) => {
+        written.push(s);
+        writes++;
+        return writes !== 2; // second write signals a full socket buffer
+      },
+      end: () => {
+        (res as unknown as { writableEnded: boolean }).writableEnded = true;
+      },
+      destroy: () => {
+        (res as unknown as { destroyed: boolean }).destroyed = true;
+      },
+    });
+
+    const events: CopilotEvent[] = [1, 2, 3, 4].map((seq) =>
+      CopilotEventSchema.parse({ seq, threadId: "t-pump", ts: 1, type: "note", note: `n${seq}` }),
+    );
+    async function* source() {
+      yield* events;
+    }
+
+    const pump = pumpEvents(res, source(), { drainTimeoutMs: 5_000 });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(written).toHaveLength(2); // parked after the false write, not racing ahead
+    res.emit("drain");
+    await pump;
+
+    expect(written).toHaveLength(4);
+    expect(res.writableEnded).toBe(true);
+    expect(res.destroyed).toBe(false);
+  });
+
+  it("slow client (unit): a client that never drains is disconnected mid-pump", async () => {
+    const { pumpEvents } = await import("../src/server/sse");
+    const { EventEmitter } = await import("node:events");
+
+    let writes = 0;
+    const res = new EventEmitter() as unknown as import("node:http").ServerResponse;
+    Object.assign(res, {
+      writableEnded: false,
+      destroyed: false,
+      write: () => {
+        writes++;
+        return false; // socket buffer full from the first write, forever
+      },
+      end: () => {
+        (res as unknown as { writableEnded: boolean }).writableEnded = true;
+      },
+      destroy: () => {
+        (res as unknown as { destroyed: boolean }).destroyed = true;
+      },
+    });
+
+    async function* source() {
+      for (let seq = 1; seq <= 10; seq++) {
+        yield CopilotEventSchema.parse({ seq, threadId: "t-stall", ts: 1, type: "note", note: "n" });
+      }
+    }
+    await pumpEvents(res, source(), { drainTimeoutMs: 10 });
+
+    expect(res.destroyed).toBe(true);
+    expect(writes).toBe(1); // nothing more was pushed at a dead client
+  });
+
+  it("slow client (e2e): a stalled reader still receives the complete answer at parity", async () => {
+    // Platform-tolerant integration check: assert recovery and byte parity,
+    // WITHOUT asserting kernel-level backpressure timing (that is the unit
+    // tests' job above). Modest payload, generous timeout.
+    const bigAnswer = `chunk ${"lorem ipsum dolor sit amet ".repeat(1500)}`; // ~40 KB
     const responder = offlineResponder();
     const model = new MockChatModel(
       (messages: ChatMessage[]) => {
         const system = messages.find((m) => m.role === "system")?.content ?? "";
         return system.includes("routing supervisor") ? responder(messages) : bigAnswer;
       },
-      // Large chunks: the socket buffer (~16 KB) still fills against a stalled
-      // reader, without minting tens of thousands of events.
       { chunkSize: 512 },
     );
     const copilot = await createCopilot({ model, docs: CORPUS });
@@ -497,9 +571,9 @@ describe("SSE server — hardening (Phase 5 failure catalog)", () => {
       body: JSON.stringify(CHAT_BODY),
     });
     const reader = res.body!.getReader();
-    const first = await reader.read(); // headers + first frames arrive
+    const first = await reader.read();
     expect(first.done).toBe(false);
-    await new Promise((r) => setTimeout(r, 400)); // stall: kernel buffers fill
+    await new Promise((r) => setTimeout(r, 250)); // stall, then catch up
 
     let text = new TextDecoder().decode(first.value);
     for (;;) {
@@ -514,7 +588,7 @@ describe("SSE server — hardening (Phase 5 failure catalog)", () => {
       .join("");
     expect(Buffer.from(streamed, "utf8").equals(Buffer.from(bigAnswer, "utf8"))).toBe(true);
     expect(events.at(-1)?.type).toBe("done");
-  }, 15_000);
+  }, 30_000);
 
   it("resume storm: concurrent resumes of one thread all replay identically", async () => {
     const base = await offlineServer();
