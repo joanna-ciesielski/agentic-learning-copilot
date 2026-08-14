@@ -87,6 +87,17 @@ in a background tab is excluded: browsers suspend `requestAnimationFrame`
 entirely when a tab is hidden, so that gap is invisibility, not jank — the
 frame clock re-arms on `visibilitychange`.
 
+## A note on citation quality (investigated, deliberately not "fixed")
+
+With `k=4` retrieval, weak tail documents can appear in the citation line (e.g. an
+unrelated course beside the photosynthesis sources). A relative score threshold was
+prototyped and rejected with evidence: the retriever fuses rankings with RRF, whose
+scores are rank-shaped and nearly flat by construction (measured spread across ranks 1–4:
+~4%), so no ratio separates relevant from irrelevant — it would only fit noise. The
+correct production lever is a reranker behind the existing retrieval seam (already the
+documented swap in the architecture doc); cosmetic filtering at the citation layer would
+misrepresent what the answer was actually grounded in.
+
 ## What each pattern buys (labels in demo/client.html)
 
 1. **Ingestion decoupled from render** — network events land in an array;

@@ -6,7 +6,7 @@ session on the SSE streaming layer. Read it, then read
 plan's Fixed Decisions and the decisions recorded in
 [`../streaming-contract.md`](../streaming-contract.md) §14 are both binding.
 
-**Last updated:** 2026-08-14 · **Current phase:** Phase 5 (hardening & load) — delivered, awaiting DoD confirmation
+**Last updated:** 2026-08-14 · **Current phase:** Phase 6 (docs & portfolio) — delivered. **This completes the plan.**
 
 ---
 
@@ -19,80 +19,56 @@ plan's Fixed Decisions and the decisions recorded in
 | 2 — Graph event stream | Merged to `main` (`c72fabe`). |
 | 3 — SSE server | Merged to `main` (`e1dcfc9`). |
 | 4 — Demo client & state management | Merged to `main` (`6b564c7`), incl. the background-tab HUD fix. |
-| 5 — Hardening & load | **Delivered, awaiting DoD confirmation.** Branch `phase-5/hardening`. |
-| 6 — Docs & portfolio assets | Not started. |
+| 5 — Hardening & load | Merged to `main`, plus two follow-up fixes for platform-timing test bugs found on macOS (slow-client and abort tests moved to deterministic layers). |
+| 6 — Docs & portfolio assets | **Delivered.** Branch `phase-6/docs-portfolio`. |
 
 Canonical remote: `github.com/joanna-ciesielski/agentic-learning-copilot`.
 Delivery is by git bundle until the repo is added to the sandbox session's
 authorized sources (pushes 403 otherwise).
 
-## 2. What Phase 5 added (earlier phases live in git history)
+## 2. What Phase 6 added (earlier phases live in git history)
 
 | File | Change |
 | --- | --- |
-| `scripts/streaming-load.ts` + `npm run load` | Load harness: SLO pass (25 conns, zero-error gate), saturation probe (100 conns, report-only), TTFB sampler (sequential + cold burst — autocannon's latency is time-to-LAST-byte, so first-token timing is hand-rolled), memory/leak checks with forced GC and a settle longer than undici's keep-alive so the connection count measures the server. |
-| `docs/streaming-perf.md` | Measured: saturation ~150–165 turns/sec on one core; 25-conn SLO clean (p50 163 ms, p99 633 ms full-stream); TTFB unloaded p50 7.4 ms; post-GC heap growth −10 MB over ~3,100 turns; 0 stuck connections. |
-| `docs/failure-modes.md` | Modes 11–15: slow client, mid-stream provider failure, resume storm, heartbeat-only idle connection, duplicate Last-Event-ID — each with its guard and test reference. |
-| `tests/sseServer.test.ts` | +8: slow-client backpressure with end-to-end parity (135 KB answer vs a stalled reader — covers the in-loop drain branch), resume storm (20 concurrent, byte-identical), duplicate cursor idempotence, heartbeat-bridged idle window, listener/connection leak canary, stress defaults + client abort, /demo alias, GET /v1/stress 405. |
-| `tests/streamingCopilot.test.ts` | +1: `heartbeatMs: 0` disables heartbeats. |
-| `package.json` / `tsconfig.json` | devDependencies: `autocannon`, `@types/autocannon` (the plan's one permitted addition); `scripts/` now typechecked. |
+| `README.md` | CI badge fixed to the canonical account; status + 30-second quickstart (`npm run serve`); streaming-layer section; roadmap row S0–S6; test counts updated. |
+| `docs/architecture.md` | "The streaming path" section with an ASCII diagram (one graph, two delivery modes) and the four CI-gated invariants; Zone 1 and non-goals updated; effort row added. |
+| `docs/application-note.md` | New "Streaming & client state under load" section with the measured numbers; requirement row for AI & streaming architecture review; engineering bar updated honestly (281 tests, 0 runtime-dependency vulnerabilities, dev-only advisories disclosed, the two macOS test bugs named). |
+| `docs/demo.md` | The citation-threshold no-ship decision recorded with evidence (RRF scores are rank-shaped and flat — measured ~4% spread — so a ratio filter fits noise; the real lever is a reranker behind the existing seam). |
 
-## 3. Baseline (verified 2026-08-14)
+## 3. Project definition of done — final status
 
-```
-npm ci
-npm run typecheck   # clean
-npm run lint        # clean
-npm test            # 22 files, 278 tests (108 pre-existing untouched)
-npm run test:coverage
-#   Statements 97.72%  Branches 89.02%  Functions 98.61%  Lines 98.93%
-NODE_OPTIONS=--expose-gc npm run load   # SLO pass must be clean
-```
+| Plan requirement | Status |
+| --- | --- |
+| All phase DoDs | Met (each recorded per phase in git history). |
+| 108 pre-existing tests untouched and green | `git diff` on the 17 original test files vs pre-streaming main: zero lines. 281 total tests. |
+| Parity + isolation + budget-kill invariants CI-gated | `tests/streamingParity`, `streamingGateway`, `streamingCopilot`, `sseServer` — all in the CI path. |
+| Demo reproducible offline | `npm i && npm run serve` → demo at :3000, no keys, <5 min. |
+| ADR 0008 + contract v1.0 published | Both merged, contract status accepted, §14 decisions + R7/R8 recorded. |
+| Portfolio assets refreshed | Screenshot committed; portfolio entry copy delivered outside the repo (plan says outside). |
+| Zero new runtime dependencies | Runtime deps still exactly 3; devDependencies added: autocannon, @types/autocannon (plan-permitted). |
 
-Project coverage gate met: ≥85% branch on new modules, ≥89% overall (89.02%).
+Final baseline: 281 tests / 22 files; statements 97.7%, branches 89.2%, functions 98.6%,
+lines 98.9%; typecheck/lint clean; `npm audit --omit=dev`: 0 vulnerabilities.
 
-## 4. Design decisions made during Phase 5
+## 4. Open items beyond the plan (not started, deliberately)
 
-1. **SLO pass and saturation probe are separate runs.** At 100-way concurrency
-   the single core saturates and 10 s-timeout errors appear — that is the
-   ceiling being measured, not a bug. The zero-error gate applies at 25
-   connections; the 100-connection numbers are reported, not gated.
-2. **TTFB is sampled two ways** (sequential = what one user feels: p50 7.4 ms;
-   100-way cold burst = worst case by construction: p50 379 ms) because a
-   single number would mislead in one direction or the other.
-3. **Leak measurement forced a GC first.** Unforced heapUsed showed +120 MB —
-   all uncollected garbage; post-GC the run RETURNS memory (−10 MB). The load
-   script documents `NODE_OPTIONS=--expose-gc`.
-4. **The leak canary tolerates undici's pool.** Client keep-alive keeps 1–2
-   sockets; the assert bounds connections ≤4 against 30 requests — growth
-   toward the request count is the leak signal, not small constants.
+Citation quality: reranker behind the retrieval seam (documented, not built — see
+`docs/demo.md`). Real-provider adapters remain the standing next build if the repo grows.
 
-## 5. Next action — Phase 6 (docs & portfolio assets)
+## 5. Next action
 
-Do not start until Phase 5's DoD is confirmed. The last phase, docs-only:
-
-1. Branch `phase-6/docs-portfolio` off `phase-5/hardening`.
-2. `docs/architecture.md`: add the streaming path (event layer → transport →
-   demo client) to the architecture description and regenerate the diagram
-   with the streaming path highlighted.
-3. `README.md`: quickstart — clone → `npm i` → `npm run serve` → open the demo;
-   the Phase 6 DoD is a stranger doing that in under 5 minutes.
-4. `docs/application-note.md`: new section "Streaming & client state under
-   load" using the measured numbers from `docs/streaming-perf.md` and
-   `docs/demo.md`.
-5. Optional flagged polish: citation score-threshold so weak tail retrievals
-   (e.g. unrelated docs at k=4) stop appearing in the citation line.
-6. Refresh the portfolio entry copy (outside the repo).
+None within this plan — Phase 6 completes it. Any future session: read this
+file, the contract, and ADR-0008; the standing rules below remain in force for
+any change touching the streaming surface.
 
 ## 6. Commands to resume
 
 ```bash
-git checkout phase-5/hardening
+git checkout main
 npm ci
 npm run typecheck && npm run lint && npm test && npm run test:coverage
+npm run serve
 NODE_OPTIONS=--expose-gc npm run load
-
-git checkout -b phase-6/docs-portfolio
 ```
 
 ## 7. Standing rules in force
