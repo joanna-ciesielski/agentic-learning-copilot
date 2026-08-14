@@ -390,6 +390,21 @@ describe("Copilot.stream — tenant isolation and observability", () => {
     }
   });
 
+  it("heartbeatMs: 0 disables heartbeats entirely", async () => {
+    const copilot = await createCopilot({
+      model: new MockChatModel(offlineResponder(), { delayMs: 30 }),
+      docs: CORPUS,
+    });
+    const events = await collect(
+      copilot.stream(
+        { query: "explain photosynthesis", scope: SCOPE },
+        { threadId: THREAD, heartbeatMs: 0 },
+      ),
+    );
+    expect(events.some((e) => e.type === "heartbeat")).toBe(false);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
   it("mirrors ask()'s tracer lifecycle on the streamed path", async () => {
     const tracer = new InMemoryTracer();
     const copilot = await createCopilot({ model: offlineModel(), docs: CORPUS, tracer });
