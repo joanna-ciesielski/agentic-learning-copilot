@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: agentic-learning-copilot
+abstract: A multi-agent retrieval and SSE streaming system on LangGraph.js, with byte-equal parity between streamed and batch output enforced in CI, tenant isolation gated at zero leakage, and a documented failure-mode catalog.
+type: software
+authors:
+  - family-names: Ciesielski
+    given-names: Joanna
+    orcid: https://orcid.org/0009-0001-2397-3660
+license: MIT
+repository-code: https://github.com/joanna-ciesielski/agentic-learning-copilot
+keywords:
+  - agents
+  - retrieval
+  - streaming
+  - evaluation
