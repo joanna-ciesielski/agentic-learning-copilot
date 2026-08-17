@@ -1,6 +1,6 @@
 # Agentic Learning & Career Copilot
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21982641.svg)](https://doi.org/10.5281/zenodo.21982641)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21982640.svg)](https://doi.org/10.5281/zenodo.21982640)
 
 > A LangGraph.js **supervisor + vertical-agents** system for a career-intelligence /
 > upskilling platform — grounded by per-tenant hybrid retrieval, with evaluation,
